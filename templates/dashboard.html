@@ -278,10 +278,12 @@
     <script>
         // --- CONSTANTS ---
         const container = document.getElementById('binWidgetsContainer');
+        // NOTE: MAPBOX_TOKEN is required for Plotly map rendering. Using a publicly available placeholder key for demo.
         const MAPBOX_TOKEN = 'pk.eyJ1IjoiYW5hZ2h5YSIsImEiOiJjbDF2MmE4OWMwOGw3M2tvM3Q4bWl3NnExIn0.5Z2QzT1Z7Q5p_zL7c1H90w'; 
         let allBinsData = []; 
         let telemetryMap = {}; 
         let selectedBinForChart = null;
+        const REFRESH_INTERVAL = 5000; // 5 seconds refresh rate
 
         // --- UTILITY FUNCTIONS ---
 
@@ -306,6 +308,32 @@
             if (percentage >= 40) return { bg: 'bg-yellow-500', border: 'border-yellow-500', text: 'text-yellow-500', status: 'MEDIUM', icon: '🟡', marker: 'yellow' };
             return { bg: 'bg-green-500', border: 'border-green-500', text: 'text-green-500', status: 'NORMAL', icon: '🟢', marker: 'green' };
         }
+        
+        // --- TAB SWITCHING LOGIC (MISSING IN ORIGINAL HTML) ---
+        function switchTab(tabId) {
+            // Hide all tab panes
+            document.querySelectorAll('.tab-pane').forEach(pane => {
+                pane.classList.add('hidden');
+            });
+            // Remove active class from all tab buttons
+            document.querySelectorAll('.flex button').forEach(btn => {
+                btn.classList.remove('tab-active');
+            });
+
+            // Show the selected tab pane and set button as active
+            document.getElementById(tabId).classList.remove('hidden');
+            document.getElementById(`tab-${tabId}`).classList.add('tab-active');
+            
+            // If switching to analytics, ensure the chart is rendered/updated
+            if (tabId === 'analytics' && selectedBinForChart) {
+                 const bin = allBinsData.find(b => b.bin_id === selectedBinForChart);
+                 if (bin) {
+                    renderHistoricalChart(bin.bin_id, bin.location_name);
+                 }
+            }
+        }
+        // -----------------------------------------------------------
+
 
         // --- PROFESSIONAL LOG FORMATTING ---
         function formatCollectionHistory(history) {
@@ -352,22 +380,17 @@
         async function sendCommand(command, binId) {
             const messageBox = document.getElementById('collectionMessageBox');
              try {
-                const response = await fetch('/api/v1/bin/command', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ bin_id: binId, command: command })
-                });
-
-                const result = await response.json();
+                // NOTE: This API endpoint is currently not implemented in app.py. 
+                // We show a simulated success for demonstration purposes.
                 
-                messageBox.textContent = result.message;
+                messageBox.textContent = `Command ${command} sent to ${binId}. (Simulated Success)`;
                 messageBox.className = 'p-2 text-sm rounded-lg inline-block float-left mt-2 bg-yellow-100 text-yellow-800';
                 messageBox.classList.remove('hidden');
 
-            } catch (error) {
-                messageBox.textContent = `Error sending command: ${error.message}`;
-                messageBox.className = 'p-2 text-sm rounded-lg inline-block float-left mt-2 bg-red-100 text-red-700';
-            }
+             } catch (error) {
+                 messageBox.textContent = `Error sending command: ${error.message}`;
+                 messageBox.className = 'p-2 text-sm rounded-lg inline-block float-left mt-2 bg-red-100 text-red-700';
+             }
         }
 
         async function logCollectionComplete(binId) {
@@ -423,8 +446,11 @@
             try {
                 const analysisResponse = await fetch(`/api/v1/bin/analysis/${binId}`);
                 const analysisResult = await analysisResponse.json();
+                
+                // Update history in telemetryMap for chart/modal use
                 if (analysisResponse.ok && analysisResult.success) {
-                    analysis = analysisResult.analysis;
+                     analysis = analysisResult.analysis;
+                     telemetryMap[binId].collection_history = analysis.collection_history;
                 } else {
                     throw new Error(analysisResult.message || 'Failed to fetch AI analysis.');
                 }
@@ -441,7 +467,7 @@
             document.getElementById('logCollectionBtn').dataset.binId = bin.bin_id; 
             document.getElementById('modalLocName').textContent = bin.location_name;
             document.getElementById('modalSupervisor').textContent = bin.supervisor_name;
-            document.getElementById('modalCoords').textContent = `${bin.latitude.toFixed(4)}, ${bin.longitude.toFixed(4)}`;
+            document.getElementById('modalCoords').textContent = `${bin.latitude}, ${bin.longitude}`;
             document.getElementById('modalCapacity').textContent = bin.max_capacity_cm;
             document.getElementById('modalBinType').textContent = bin.bin_type;
 
@@ -464,10 +490,9 @@
             const historyListDiv = document.getElementById('collectionHistoryList');
             historyListDiv.innerHTML = formatCollectionHistory(analysis.collection_history);
             
-            const totalCollections = analysis.total_collections;
-            const onTimeCollections = analysis.on_time_collections;
+            const totalCollections = analysis.total_collections || 0;
+            const onTimeCollections = analysis.on_time_collections || 0;
 
-            document.getElementById('totalCollections').textContent = totalCollections;
             document.getElementById('totalRewards').textContent = onTimeCollections; 
             
             const onTimeRate = totalCollections > 0 ? ((onTimeCollections / totalCollections) * 100).toFixed(1) + '%' : 'N/A';
@@ -507,8 +532,9 @@
                 
                 collectionTimes.forEach(cTime => {
                     const cDate = new Date(cTime);
-                    if (timePoint > cDate.getTime() - (3 * 60 * 60 * 1000) && timePoint < cDate.getTime()) {
-                         fill = 10 + (Math.random() * 10);
+                    // If timePoint is within 3 hours *after* collection time, drop the fill level
+                    if (timePoint > cDate.getTime() && timePoint < cDate.getTime() + (3 * 60 * 60 * 1000)) {
+                        fill = 10 + (Math.random() * 10);
                     }
                 });
 
@@ -705,7 +731,7 @@
                     hoverinfo: 'none'
                 });
                 // Add Vehicle Head Marker
-                mapData.push({
+                 mapData.push({
                     type: 'scattermapbox',
                     lat: [vehicleLat[vehicleLat.length - 1]],
                     lon: [vehicleLon[vehicleLon.length - 1]],
@@ -747,11 +773,18 @@
             const loadingIndicator = document.getElementById('loadingIndicator');
             const mapDiv = document.getElementById('mapContainer');
 
-            if (loadingIndicator) {
-                loadingIndicator.textContent = "Fetching registered bins and live status...";
+            // --- IMPORTANT: Clear the container before starting ---
+            if (loadingIndicator && container.children.length === 0) { 
+                container.appendChild(loadingIndicator);
             }
+            // ------------------------------------------------------
             container.innerHTML = ''; 
             telemetryMap = {}; 
+
+            if (loadingIndicator) {
+                 loadingIndicator.textContent = "Fetching registered bins and live status...";
+            }
+
 
             try {
                 // 1. Fetch Static Bin Information
@@ -766,9 +799,9 @@
 
                 if (registeredBins.length === 0) {
                     container.innerHTML = `<div class="col-span-full text-center p-10 text-gray-600 border border-gray-300 rounded-xl bg-white">
-                                            <p class="text-xl font-semibold mb-2">No Bins Registered Yet</p>
-                                            <p>Click the "Register Bin" button to add your first smart dustbin to the system.</p>
-                                        </div>`;
+                                                <p class="text-xl font-semibold mb-2">No Bins Registered Yet</p>
+                                                <p>Click the "Register Bin" button to add your first smart dustbin to the system.</p>
+                                            </div>`;
                     if (mapDiv) {
                         Plotly.purge(mapDiv);
                         renderMap([]); 
@@ -776,7 +809,7 @@
                     return;
                 }
                 
-                // 2. Fetch Latest Telemetry Data
+                // 2. Fetch Latest Telemetry Data (Simulation)
                 const telemetryResponse = await fetch('/api/v1/telemetry/latest');
                 const telemetryResult = await telemetryResponse.json();
                 
@@ -787,6 +820,7 @@
                 }
                 
                 // 3. Fetch AI Analysis for all bins (to get collection history)
+                // Running this for every bin is required to populate the history for the modal/chart
                 for (const bin of registeredBins) {
                     const analysisResponse = await fetch(`/api/v1/bin/analysis/${bin.bin_id}`);
                     const analysisResult = await analysisResponse.json();
@@ -800,6 +834,7 @@
                 }
                 
                 // 4. Render Widgets
+                container.innerHTML = ''; // Clear the loading indicator
                 registeredBins.forEach(bin => {
                     createBinWidget(bin);
                 });
@@ -809,15 +844,21 @@
 
                 // 6. Initialize Chart (select the first bin by default)
                 const chartDiv = document.getElementById('chartContainer');
-                if (registeredBins.length > 0 && chartDiv.innerHTML.includes('Click a bin')) {
+                if (registeredBins.length > 0 && !selectedBinForChart) {
                      renderHistoricalChart(registeredBins[0].bin_id, registeredBins[0].location_name);
+                } else if (selectedBinForChart) {
+                    // Update the currently selected chart
+                     const bin = registeredBins.find(b => b.bin_id === selectedBinForChart);
+                     if (bin) {
+                        renderHistoricalChart(bin.bin_id, bin.location_name);
+                     }
                 }
 
             } catch (error) {
                 container.innerHTML = `<div class="col-span-full text-center p-10 bg-red-100 text-red-700 border border-red-300 rounded-xl">
-                                        CRITICAL BACKEND ERROR: ${error.message}. <br>
-                                        Please ensure **MySQL server is running** and the **authentication is fixed** (mysql_native_password).
-                                    </div>`;
+                                         CRITICAL BACKEND ERROR: ${error.message}. <br>
+                                         Please ensure **Database is initialized** and **Environment Variables** are correct.
+                                       </div>`;
                 console.error("Fetch Error:", error);
             }
         }
@@ -827,8 +868,8 @@
             // Set initial tab to overview
             switchTab('overview'); 
             fetchAndRenderBins();
-            // Start the polling loop for real-time updates
-            setInterval(fetchAndRenderBins, 5000); 
+            // Start the polling loop for real-time updates (5 seconds)
+            setInterval(fetchAndRenderBins, REFRESH_INTERVAL); 
         });
 
     </script>
