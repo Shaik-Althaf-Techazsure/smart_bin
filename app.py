@@ -50,10 +50,64 @@ DB_PASSWORD = os.environ.get('DB_PASSWORD')
 DB_PORT = os.environ.get('DB_PORT', '5432') # Default PostgreSQL port
 DB_NAME = os.environ.get('DB_NAME')
 
+# --- 2a. EMBEDDED SQL SCHEMA FOR AUTO-CREATION ---
+# This SQL string contains all necessary CREATE TABLE statements.
+DB_INIT_SQL = """
+-- 1. Table structure for table dustbins
+DROP TABLE IF EXISTS dustbins CASCADE;
+CREATE TABLE dustbins (
+  bin_id VARCHAR(10) PRIMARY KEY,
+  latitude DECIMAL(9, 6) NOT NULL,
+  longitude DECIMAL(9, 6) NOT NULL,
+  supervisor_name VARCHAR(100) DEFAULT NULL,
+  location_name VARCHAR(255) DEFAULT NULL,
+  bin_type VARCHAR(50) DEFAULT NULL,
+  max_capacity_cm INTEGER NOT NULL,
+  installation_date DATE DEFAULT NULL
+);
+
+-- 2. Table structure for table telemetry
+DROP TABLE IF EXISTS telemetry CASCADE;
+CREATE TABLE telemetry (
+  record_id SERIAL PRIMARY KEY,
+  bin_id VARCHAR(10) NOT NULL,
+  timestamp TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+  fill_level_cm INTEGER DEFAULT NULL,
+  fill_percentage INTEGER DEFAULT NULL,
+  is_lid_locked BOOLEAN DEFAULT NULL,
+  alert_triggered BOOLEAN DEFAULT NULL,
+  collection_time TIMESTAMP WITHOUT TIME ZONE DEFAULT NULL,
+  delay_minutes INTEGER DEFAULT NULL,
+  
+  -- Foreign Key Constraint (linking to dustbins)
+  CONSTRAINT telemetry_fk_bin_id 
+    FOREIGN KEY (bin_id) 
+    REFERENCES dustbins (bin_id)
+);
+
+-- 3. Table structure for table collection_log (Required by your API endpoints)
+DROP TABLE IF EXISTS collection_log CASCADE;
+CREATE TABLE collection_log (
+  log_id SERIAL PRIMARY KEY,
+  bin_id VARCHAR(10) NOT NULL,
+  collection_time TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+  alert_time TIMESTAMP WITHOUT TIME ZONE,
+  time_to_collect_min INTEGER,
+  is_on_time BOOLEAN,
+  reward_issued BOOLEAN,
+  collector_id VARCHAR(10) DEFAULT NULL,
+  
+  -- Foreign Key Constraint (linking to dustbins)
+  CONSTRAINT collection_log_fk_bin_id
+    FOREIGN KEY (bin_id)
+    REFERENCES dustbins (bin_id)
+);
+"""
+
+
 def get_db_connection():
     """
     Establishes and returns a new PostgreSQL database connection using individual parameters.
-    Reverting to sslmode='require' as it is the most secure and recommended setting for Supabase.
     """
     if not all([DB_HOST, DB_USER, DB_PASSWORD, DB_NAME]):
         print("FATAL: One or more database environment variables (HOST, USER, PASSWORD, NAME) are missing.")
@@ -83,6 +137,33 @@ def get_db_connection():
     except Exception as e:
         print(f"Error establishing connection: {e}")
         return None
+
+def initialize_database():
+    """
+    Connects to the database and executes the full schema creation SQL.
+    This should only be run once for initialization.
+    """
+    conn = get_db_connection()
+    if conn is None:
+        return {"success": False, "message": "Database initialization connection failed."}, 500
+    
+    try:
+        cursor = conn.cursor()
+        # Execute the multi-statement SQL schema
+        cursor.execute(DB_INIT_SQL)
+        conn.commit()
+        
+        print("✅ Database Schema Created/Replaced Successfully.")
+        return {"success": True, "message": "Database schema created/replaced successfully."}, 200
+        
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ Error during schema creation: {e}")
+        return {"success": False, "message": f"Error during schema creation: {e}"}, 500
+    finally:
+        if conn and not conn.closed:
+            cursor.close()
+            conn.close()
 
 # --- 3. CORE UTILITIES (PostgreSQL History & Logging) ---
 
@@ -182,6 +263,13 @@ def register_form():
     return render_template('register_bin.html', title='Register New Bin')
 
 # --- 5. API ENDPOINTS ---
+
+# --- NEW ENDPOINT FOR DATABASE INITIALIZATION ---
+@app.route('/api/v1/init_db', methods=['POST'])
+def init_db_endpoint():
+    """API endpoint to manually trigger database schema creation."""
+    return jsonify(initialize_database())
+# -----------------------------------------------
 
 @app.route('/api/v1/register_bin', methods=['POST'])
 def register_bin():
@@ -468,8 +556,11 @@ def get_collection_route():
 
 # --- 7. RUN SERVER ---
 if __name__ == '__main__':
+    # NOTE: If running locally, you must have the required DB variables in a .env file
     print("-------------------------------------------------------")
     print("Flask Server running at: http://127.0.0.1:5000/")
+    # You can uncomment this line and run the schema setup locally once:
+    # print(initialize_database()) 
     print("-------------------------------------------------------")
     # For production deployment (Render), we typically rely on gunicorn
-    # app.run(debug=True, port=5000)
+    app.run(debug=True, port=5000)
