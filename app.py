@@ -341,6 +341,12 @@ def get_registered_bins():
         columns = [desc[0] for desc in cursor.description]
         bins = [dict(zip(columns, row)) for row in cursor.fetchall()]
 
+        # --- FIX: Convert datetime.date object to ISO string for JSON serialization ---
+        for bin_data in bins:
+            if isinstance(bin_data.get('installation_date'), date):
+                bin_data['installation_date'] = bin_data['installation_date'].isoformat()
+        # -----------------------------------------------------------------------------
+
         return jsonify({"success": True, "bins": bins}), 200
 
     except Exception as e:
