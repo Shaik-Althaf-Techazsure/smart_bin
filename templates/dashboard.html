@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }} | Advanced Smart Waste Console</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Plotly JS for advanced mapping and plotting -->
+    <script src="https://cdn.plot.ly/plotly-2.30.0.min.js" charset="utf-8"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+        .widget-card {
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+        }
+        .widget-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.15);
+        }
+        /* Custom map container size */
+        #mapContainer {
+            min-height: 55vh;
+            border-radius: 1rem;
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.05);
+        }
+        #chartContainer {
+             min-height: 450px;
+        }
+        /* Modal Backdrop */
+        .modal-backdrop {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            z-index: 50;
+            display: none;
+            overflow-y: auto; /* Allow scrolling */
+        }
+        .modal-content {
+            z-index: 60;
+            transform: translateY(-50px);
+            opacity: 0;
+            transition: all 0.3s ease-out;
+            margin: auto; 
+            max-width: 90%;
+            margin-top: 5vh;
+            margin-bottom: 5vh;
+        }
+        .modal-active .modal-backdrop {
+            display: flex;
+        }
+        .modal-active .modal-content {
+            transform: translateY(0);
+            opacity: 1;
+        }
+        .tab-active {
+            border-bottom: 3px solid #3B82F6;
+            color: #3B82F6;
+        }
+        /* Custom pulsing for critical alert */
+        .alert-pulsing {
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(255, 0, 0, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(255, 0, 0, 0); }
+        }
+    </style>
+</head>
+<body class="min-h-screen">
+    
+    <!-- AUDIO ALERT ELEMENT (Hidden) -->
+    <audio id="sirenAlert" loop>
+        <!-- Use a non-commercial/standard alert sound for production -->
+        <source src="https://actions.google.com/sounds/v1/alarms/bugle_tune.ogg" type="audio/ogg">
+        Your browser does not support the audio element.
+    </audio>
+
+    <!-- Top Navigation Bar -->
+    <nav class="flex justify-between items-center py-4 px-6 bg-white rounded-b-xl shadow-lg sticky top-0 z-10">
+        <h1 class="text-2xl font-extrabold text-blue-600">
+            TN Smart Waste Console (Hyderabad Zone)
+        </h1>
+        <div class="space-x-4 flex items-center">
+            <a href="/register" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-xl shadow-md transition duration-200 flex items-center">
+                <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+                Register Bin
+            </a>
+            <a href="/logout" class="text-gray-600 hover:text-red-500 font-medium">Logout</a>
+        </div>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main class="p-6">
+        <!-- Tab Navigation -->
+        <div class="flex border-b border-gray-300 mb-6 bg-white rounded-xl shadow-md p-2">
+            <button id="tab-overview" class="py-3 px-6 text-lg font-semibold text-gray-500 hover:text-blue-600 transition duration-150 tab-active" onclick="switchTab('overview')">Overview Map & Live Status</button>
+            <button id="tab-analytics" class="py-3 px-6 text-lg font-semibold text-gray-500 hover:text-blue-600 transition duration-150" onclick="switchTab('analytics')">Advanced Analytics</button>
+        </div>
+
+        <!-- Tab Content -->
+        <div id="tabContent">
+            <!-- OVERVIEW TAB (Default View) -->
+            <div id="overview" class="tab-pane">
+                <h2 class="text-3xl font-bold text-gray-800 mb-6">
+                    Real-Time Monitoring & Collection Simulation
+                </h2>
+
+                <!-- TOP ROW: Map and AI Alerts -->
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+                    <!-- Column 1 & 2: Map Widget (2/3 width) -->
+                    <div class="lg:col-span-2 bg-white p-4 rounded-2xl shadow-xl">
+                        <div id="mapContainer">
+                            <p class="text-center p-10 text-gray-500">Initializing Map...</p>
+                        </div>
+                    </div>
+
+                    <!-- Column 3: AI Alerts & Recommendations (1/3 width) -->
+                    <div class="lg:col-span-1">
+                        <div class="bg-white p-6 rounded-2xl shadow-xl h-full border-l-4 border-l-red-500">
+                            <h3 class="text-xl font-bold text-gray-700 mb-4 flex items-center">
+                                <svg class="w-6 h-6 mr-2 text-red-500" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M10.293 3.293a1 1 0 011.414 0l6 6a1 1 0 01-1.414 1.414L12 6.414V17a1 1 0 11-2 0V6.414L5.707 10.707a1 1 0 01-1.414-1.414l6-6z" clip-rule="evenodd"></path></svg>
+                                <span class="text-red-600">AI Prescriptive Alerts</span>
+                            </h3>
+                            <div id="aiAlerts" class="space-y-4 max-h-96 overflow-y-auto">
+                                <!-- Placeholder alerts updated dynamically -->
+                                <div id="criticalAlertContainer" class="p-3 bg-red-50 border border-red-200 rounded-lg hidden">
+                                    <p class="text-sm font-semibold text-red-700 flex items-center">
+                                        <svg class="w-4 h-4 mr-1 animate-pulse" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
+                                        OVERFLOW WARNING!
+                                    </p>
+                                </div>
+                                <p class="text-sm text-gray-500 italic p-3 text-center">
+                                    Awaiting new anomalies...
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- BOTTOM ROW: Real-Time Status Widgets -->
+                <div id="statusSection">
+                    <h3 class="text-xl font-bold text-gray-700 mb-4">Live Bin Status Overview</h3>
+                    <div id="binWidgetsContainer" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                        <!-- Widgets will be injected here by JavaScript -->
+                        <div id="loadingIndicator" class="col-span-full text-center p-10 text-gray-500">
+                            Loading registered bins... (Ensure data ingestor is running)
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ANALYTICS TAB (Chart View) -->
+            <div id="analytics" class="tab-pane hidden">
+                <h2 class="text-3xl font-bold text-gray-800 mb-6">
+                    Waste Flow Analysis & Optimization
+                </h2>
+
+                <!-- CHART ROW -->
+                <div class="bg-white p-6 rounded-2xl shadow-xl mb-6">
+                    <h3 class="text-xl font-bold text-gray-700 mb-4">
+                        Historical Fill Trend: <span id="selectedBinText" class="text-blue-600">Select a Bin</span>
+                    </h3>
+                    <div id="chartContainer" class="w-full">
+                        <p class="text-center p-20 text-gray-500">Click a bin widget on the Overview tab to view its 24-hour fill history.</p>
+                    </div>
+                </div>
+                
+                <!-- KEY METRICS ROW -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="bg-white p-6 rounded-2xl shadow-md border-l-4 border-l-purple-500">
+                        <p class="text-sm text-gray-500">Average Fill Time (Hrs)</p>
+                        <p class="text-3xl font-extrabold text-purple-600 mt-1">14.2 <span class="text-sm font-medium text-gray-400">/ 24 hrs</span></p>
+                        <p class="text-xs text-gray-500 mt-2">Fastest filling zone: Kukatpally</p>
+                    </div>
+                    <div class="bg-white p-6 rounded-2xl shadow-md border-l-4 border-l-yellow-500">
+                        <p class="text-sm text-gray-500">Total Delay Alerts</p>
+                        <p class="text-3xl font-extrabold text-yellow-600 mt-1">12 <span class="text-sm font-medium text-gray-400">/ last week</span></p>
+                        <p class="text-xs text-gray-500 mt-2">90% resolved within 3 hours.</p>
+                    </div>
+                    <div class="bg-white p-6 rounded-2xl shadow-md border-l-4 border-l-green-500">
+                        <p class="text-sm text-gray-500">Collection Efficiency Score</p>
+                        <p class="text-3xl font-extrabold text-green-600 mt-1">94.7%</p>
+                        <p class="text-xs text-gray-500 mt-2">Targeting 98% by next quarter.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+    
+    <!-- DETAIL MODAL -->
+    <div id="binDetailModal" class="modal-backdrop items-center justify-center" onclick="if(event.target.id === 'binDetailModal') closeModal();">
+        <div class="modal-content bg-white p-8 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+            <div class="flex justify-between items-center border-b pb-3 mb-4">
+                <h2 class="text-2xl font-bold text-gray-800">Bin Details: <span id="modalBinId" class="text-blue-600"></span></h2>
+                <button onclick="closeModal()" class="text-gray-500 hover:text-gray-900 text-3xl font-light leading-none">&times;</button>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- STATIC / LIVE INFO -->
+                <div>
+                    <h3 class="text-xl font-semibold mb-3 text-gray-700 border-b border-gray-100 pb-1">Registration & Live Status</h3>
+                    <p class="text-sm text-gray-600 mb-1">Location Name: <span id="modalLocName" class="font-medium text-gray-800"></span></p>
+                    <p class="text-sm text-gray-600 mb-1">Supervisor: <span id="modalSupervisor" class="font-medium text-gray-800"></span></p>
+                    <p class="text-sm text-gray-600 mb-1">Coordinates: <span id="modalCoords" class="font-medium text-gray-800"></span></p>
+                    <p class="text-sm text-gray-600 mb-1">Max Capacity: <span id="modalCapacity" class="font-medium text-gray-800"></span> cm</p>
+                    <p class="text-sm text-gray-600 mb-1">Waste Type: <span id="modalBinType" class="font-medium text-gray-800"></span></p>
+                    
+                    <div class="mt-4 p-3 border rounded-lg bg-gray-50">
+                        <p class="text-sm text-gray-600 mb-1">Current Fill: <span id="modalCurrentFill" class="font-bold text-lg text-red-500"></span></p>
+                        <p class="text-sm text-gray-600 mb-1">Lid Status: <span id="modalLidStatus" class="font-medium text-gray-800"></span></p>
+                        <p class="text-sm text-gray-600 mb-1">Alert Status: <span id="modalAlert" class="font-medium text-red-600"></span></p>
+                        <p class="text-sm text-gray-600 mb-1">Collection Delay: <span id="modalDelay" class="font-medium text-red-600"></span> minutes</p>
+                    </div>
+                </div>
+
+                <!-- AI & PERFORMANCE LOG -->
+                <div>
+                    <h3 class="text-xl font-semibold mb-3 text-gray-700 border-b border-gray-100 pb-1">AI Analysis & Collector Log</h3>
+                    
+                    <div id="aiAnalysisResult" class="p-3 border rounded-lg bg-blue-50 border-blue-200 mb-4">
+                        <p class="text-xs font-semibold text-blue-800 mb-1">AI CORE ISSUE: <span id="aiCoreIssue"></span></p>
+                        <p class="text-xs text-gray-700 font-medium">Urgency: <span id="aiUrgency"></span></p>
+                        <ul id="aiPrecautionsList" class="list-disc list-inside text-xs text-gray-600 mt-1 space-y-0.5">
+                            <!-- AI Precautions will be injected here -->
+                        </ul>
+                    </div>
+
+                    <!-- METRICS SUMMARY -->
+                    <div class="grid grid-cols-2 gap-2 mb-4">
+                        <div class="p-2 bg-gray-100 rounded-lg">
+                            <p class="text-xs text-gray-500">On-Time Rate:</p>
+                            <p id="onTimeRate" class="text-xl font-bold text-green-600"></p>
+                        </div>
+                        <div class="p-2 bg-gray-100 rounded-lg">
+                            <p class="text-xs text-gray-500">Total Rewards:</p>
+                            <p id="totalRewards" class="text-xl font-bold text-yellow-600"></p>
+                        </div>
+                    </div>
+                    
+                    <!-- COLLECTION HISTORY -->
+                    <h4 class="text-base font-semibold text-gray-700 mb-2 border-b pb-1">Collection Records:</h4>
+                    <div id="collectionHistoryList" class="bg-gray-50 p-3 rounded-lg space-y-2 max-h-40 overflow-y-auto border">
+                        <p class="text-center text-gray-500 italic">Loading history...</p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- ACTION BUTTONS -->
+            <div id="modalActionButtons" class="mt-8 text-right">
+                <div id="collectionMessageBox" class="p-2 text-sm rounded-lg inline-block float-left mt-2 hidden"></div>
+
+                <button onclick="closeModal()" class="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-lg transition duration-150">Close</button>
+                
+                <button id="logCollectionBtn" 
+                        onclick="logCollectionComplete(this.dataset.binId)" 
+                        data-bin-id=""
+                        class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg ml-3 transition duration-150 flex items-center justify-center inline-block">
+                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                    Log Collection Complete
+                </button>
+                
+                <!-- Command Button Placeholder (Future use) -->
+                <button onclick="sendCommand('LOCK_LID', document.getElementById('modalBinId').textContent)" class="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-3 rounded-lg ml-3 transition duration-150 text-sm">
+                    Remote Lock
+                </button>
+            </div>
+        </div>
+    </div>
+
+
+    <script>
+        // --- CONSTANTS ---
+        const container = document.getElementById('binWidgetsContainer');
+        const MAPBOX_TOKEN = 'pk.eyJ1IjoiYW5hZ2h5YSIsImEiOiJjbDF2MmE4OWMwOGw3M2tvM3Q4bWl3NnExIn0.5Z2QzT1Z7Q5p_zL7c1H90w'; 
+        let allBinsData = []; 
+        let telemetryMap = {}; 
+        let selectedBinForChart = null;
+
+        // --- UTILITY FUNCTIONS ---
+
+        function playAlertSiren() {
+            const siren = document.getElementById('sirenAlert');
+            if (siren.paused) {
+                // Attempt to play the sound. Autoplay rules may require user interaction first.
+                siren.play().catch(e => console.log("Audio autoplay failed:", e));
+            }
+        }
+        function stopAlertSiren() {
+            const siren = document.getElementById('sirenAlert');
+            siren.pause();
+            siren.currentTime = 0;
+        }
+
+        function getStatusColor(percentage) {
+            // New 98% critical threshold
+            if (percentage >= 98) return { bg: 'bg-red-700', border: 'border-red-700', text: 'text-red-700', status: 'CRITICAL (98%)', icon: '🔥', marker: 'darkred' };
+            if (percentage >= 90) return { bg: 'bg-red-500', border: 'border-red-500', text: 'text-red-500', status: 'OVERFLOW', icon: '🚨', marker: 'red' };
+            if (percentage >= 70) return { bg: 'bg-orange-500', border: 'border-orange-500', text: 'text-orange-500', status: 'HIGH', icon: '⚠️', marker: 'orange' };
+            if (percentage >= 40) return { bg: 'bg-yellow-500', border: 'border-yellow-500', text: 'text-yellow-500', status: 'MEDIUM', icon: '🟡', marker: 'yellow' };
+            return { bg: 'bg-green-500', border: 'border-green-500', text: 'text-green-500', status: 'NORMAL', icon: '🟢', marker: 'green' };
+        }
+
+        // --- PROFESSIONAL LOG FORMATTING ---
+        function formatCollectionHistory(history) {
+            const listDiv = document.getElementById('collectionHistoryList');
+            listDiv.innerHTML = ''; // Clear previous content
+
+            if (!history || history.length === 0) {
+                return '<p class="text-center text-gray-500 italic">No historical collection records found.</p>';
+            }
+            
+            let html = '';
+            history.forEach(item => {
+                const collectTime = new Date(item.time).toLocaleString();
+                const delayText = item.delay < 0 ? 'N/A' : `${item.delay} min`;
+                
+                let statusBadge = '';
+                if (item.on_time) {
+                    statusBadge = `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">✅ On-Time</span>`;
+                } else if (item.delay >= 0) {
+                    statusBadge = `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">❌ Delayed</span>`;
+                } else {
+                     statusBadge = `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">Manual Log</span>`;
+                }
+                
+                const rewardIcon = item.reward ? '<span class="text-yellow-500 ml-1">⭐</span>' : '';
+
+                html += `
+                    <div class="flex justify-between items-center border-b border-gray-200 py-1.5">
+                        <div class="text-sm font-medium text-gray-800">${collectTime}</div>
+                        <div class="text-sm">
+                            Cleared in ${delayText} ${rewardIcon}
+                        </div>
+                        <div>
+                            ${statusBadge}
+                        </div>
+                    </div>
+                `;
+            });
+            return html;
+        }
+
+        // --- COMMAND & LOGGING FUNCTIONS ---
+        
+        async function sendCommand(command, binId) {
+            const messageBox = document.getElementById('collectionMessageBox');
+             try {
+                const response = await fetch('/api/v1/bin/command', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ bin_id: binId, command: command })
+                });
+
+                const result = await response.json();
+                
+                messageBox.textContent = result.message;
+                messageBox.className = 'p-2 text-sm rounded-lg inline-block float-left mt-2 bg-yellow-100 text-yellow-800';
+                messageBox.classList.remove('hidden');
+
+            } catch (error) {
+                messageBox.textContent = `Error sending command: ${error.message}`;
+                messageBox.className = 'p-2 text-sm rounded-lg inline-block float-left mt-2 bg-red-100 text-red-700';
+            }
+        }
+
+        async function logCollectionComplete(binId) {
+            const btn = document.getElementById('logCollectionBtn');
+            const originalText = btn.innerHTML;
+            const messageBox = document.getElementById('collectionMessageBox');
+            
+            btn.disabled = true;
+            btn.innerHTML = originalText.replace('Log Collection Complete', 'Logging...');
+            messageBox.classList.remove('hidden');
+
+            try {
+                const response = await fetch('/api/v1/log_collection', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ bin_id: binId })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    messageBox.textContent = result.message;
+                    messageBox.className = 'p-2 text-sm rounded-lg inline-block float-left mt-2 bg-green-100 text-green-700';
+                    
+                    // Close and refresh after successful log
+                    setTimeout(() => {
+                        closeModal();
+                        fetchAndRenderBins(); // Re-fetch to update widgets and history
+                    }, 1500);
+
+                } else {
+                    throw new Error(result.message || 'Failed to log collection.');
+                }
+            } catch (error) {
+                messageBox.textContent = `Error: ${error.message}`;
+                messageBox.className = 'p-2 text-sm rounded-lg inline-block float-left mt-2 bg-red-100 text-red-700';
+                console.error("Collection Log Error:", error);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = originalText;
+            }
+        }
+        
+        // --- MODAL FUNCTIONS ---
+        async function openModal(binId) {
+            const bin = allBinsData.find(b => b.bin_id === binId);
+            const latestData = telemetryMap[binId] || {};
+            
+            if (!bin) return;
+            
+            // 1. Fetch AI Analysis and History
+            let analysis = null;
+            try {
+                const analysisResponse = await fetch(`/api/v1/bin/analysis/${binId}`);
+                const analysisResult = await analysisResponse.json();
+                if (analysisResponse.ok && analysisResult.success) {
+                    analysis = analysisResult.analysis;
+                } else {
+                    throw new Error(analysisResult.message || 'Failed to fetch AI analysis.');
+                }
+            } catch (e) {
+                console.error("AI Analysis Fetch Error:", e);
+                analysis = {
+                    urgency: 'N/A', core_issue: 'Service Unavailable', precautions: ['Check backend log.'],
+                    collection_history: [] 
+                };
+            }
+
+            // 2. Populate Static/Live Data
+            document.getElementById('modalBinId').textContent = bin.bin_id;
+            document.getElementById('logCollectionBtn').dataset.binId = bin.bin_id; 
+            document.getElementById('modalLocName').textContent = bin.location_name;
+            document.getElementById('modalSupervisor').textContent = bin.supervisor_name;
+            document.getElementById('modalCoords').textContent = `${bin.latitude.toFixed(4)}, ${bin.longitude.toFixed(4)}`;
+            document.getElementById('modalCapacity').textContent = bin.max_capacity_cm;
+            document.getElementById('modalBinType').textContent = bin.bin_type;
+
+            const currentFill = latestData.fill_percentage !== undefined ? latestData.fill_percentage : 0;
+            const lidStatus = latestData.is_lid_locked ? 'LOCKED (Full)' : 'OPEN';
+            
+            document.getElementById('modalCurrentFill').textContent = `${currentFill}% (${getStatusColor(currentFill).status})`;
+            document.getElementById('modalLidStatus').textContent = lidStatus;
+            document.getElementById('modalAlert').textContent = latestData.alert_triggered ? 'ACTIVE' : 'INACTIVE';
+            document.getElementById('modalDelay').textContent = latestData.delay_minutes !== undefined ? latestData.delay_minutes : '0';
+
+            // 3. Populate AI Analysis
+            document.getElementById('aiCoreIssue').textContent = analysis.core_issue;
+            document.getElementById('aiUrgency').textContent = analysis.urgency;
+            
+            const precautionsList = document.getElementById('aiPrecautionsList');
+            precautionsList.innerHTML = analysis.precautions.map(p => `<li>${p}</li>`).join('');
+
+            // 4. Populate Collection History and Metrics
+            const historyListDiv = document.getElementById('collectionHistoryList');
+            historyListDiv.innerHTML = formatCollectionHistory(analysis.collection_history);
+            
+            const totalCollections = analysis.total_collections;
+            const onTimeCollections = analysis.on_time_collections;
+
+            document.getElementById('totalCollections').textContent = totalCollections;
+            document.getElementById('totalRewards').textContent = onTimeCollections; 
+            
+            const onTimeRate = totalCollections > 0 ? ((onTimeCollections / totalCollections) * 100).toFixed(1) + '%' : 'N/A';
+            document.getElementById('onTimeRate').textContent = onTimeRate;
+            
+            // 5. Show Modal
+            document.getElementById('collectionMessageBox').classList.add('hidden');
+            document.body.classList.add('modal-active');
+        }
+
+        function closeModal() {
+            document.body.classList.remove('modal-active');
+            stopAlertSiren(); // Stop siren if active
+        }
+
+
+        // --- CHART RENDERING (ADVANCED SIMULATION) ---
+
+        function generateSimulatedHistory(days = 1, collectionTimes = []) {
+            const data = [];
+            const pointsPerDay = 96; 
+
+            for (let i = 0; i < days * pointsPerDay; i++) {
+                const hour = (i % pointsPerDay) / 4;
+                const timePoint = new Date();
+                timePoint.setTime(timePoint.getTime() - (i * 15 * 60 * 1000)); 
+
+                let baseFill = 50;
+                if (hour >= 8 && hour <= 20) {
+                    baseFill = 70 + 20 * Math.sin((hour - 8) / 12 * Math.PI);
+                } else {
+                    baseFill = 30 + 10 * Math.random();
+                }
+                
+                let fill = baseFill + (Math.random() * 10 - 5); 
+                fill = Math.min(100, Math.max(0, fill));
+                
+                collectionTimes.forEach(cTime => {
+                    const cDate = new Date(cTime);
+                    if (timePoint > cDate.getTime() - (3 * 60 * 60 * 1000) && timePoint < cDate.getTime()) {
+                         fill = 10 + (Math.random() * 10);
+                    }
+                });
+
+                data.push({ x: timePoint, y: Math.round(fill) });
+            }
+            return data.reverse(); 
+        }
+
+        function renderHistoricalChart(binId, binName) {
+            selectedBinForChart = binId;
+            document.getElementById('selectedBinText').textContent = `${binId} (${binName})`;
+            
+            const history = (telemetryMap[binId] && telemetryMap[binId].collection_history) || [];
+            const collectionTimes = history.map(item => item.time);
+
+            const simulatedData = generateSimulatedHistory(2, collectionTimes);
+            
+            const data = [{
+                x: simulatedData.map(d => d.x),
+                y: simulatedData.map(d => d.y),
+                mode: 'lines',
+                name: 'Fill Percentage',
+                line: { color: '#3B82F6', width: 3 },
+            }];
+
+            const layout = {
+                title: false, 
+                yaxis: { title: 'Fill Percentage (%)', range: [0, 100] },
+                xaxis: { title: 'Time', type: 'date', tickformat: '%H:%M\n%b %d' },
+                margin: { t: 20, b: 50, l: 50, r: 20 },
+                plot_bgcolor: '#f9f9f9',
+                paper_bgcolor: '#ffffff',
+                hovermode: 'x unified'
+            };
+
+            Plotly.newPlot('chartContainer', data, layout, {responsive: true});
+        }
+        
+        // --- WIDGET RENDERING ---
+        function createBinWidget(bin) {
+            const latestData = telemetryMap[bin.bin_id] || {};
+            const currentFill = latestData.fill_percentage !== undefined ? latestData.fill_percentage : 0; 
+            const colors = getStatusColor(currentFill);
+            const lastUpdated = latestData.timestamp ? new Date(latestData.timestamp).toLocaleTimeString() : 'N/A';
+            
+            // Check for CRITICAL status to add pulsing class
+            const isCritical = currentFill >= 98;
+
+            const widgetHtml = `
+                <div id="widget-${bin.bin_id}" 
+                     class="widget-card bg-white p-5 rounded-xl border-l-4 ${colors.border} ${isCritical ? 'alert-pulsing border-2' : ''} hover:shadow-lg transition duration-200"
+                     onclick="openModal('${bin.bin_id}'); switchTab('analytics'); renderHistoricalChart('${bin.bin_id}', '${bin.location_name}')">
+                    <div class="flex justify-between items-start mb-3">
+                        <h3 class="text-xl font-extrabold text-gray-900">${bin.bin_id} <span class="ml-1">${colors.icon}</span></h3>
+                        <span class="text-xs font-semibold px-2 py-0.5 rounded-full ${colors.bg} text-white">${colors.status}</span>
+                    </div>
+                    
+                    <p class="text-sm text-gray-500 mb-2 truncate">Loc: <span class="font-medium text-gray-700">${bin.location_name || 'N/A'}</span></p>
+
+                    <!-- Fill Level Indicator -->
+                    <div class="mb-4">
+                        <p class="text-sm font-semibold text-gray-700 mb-1">
+                            Fill: <span class="${colors.text} text-2xl font-bold">${currentFill}%</span>
+                        </p>
+                        <div class="w-full bg-gray-200 rounded-full h-2">
+                            <div class="h-2 rounded-full ${colors.bg}" style="width: ${currentFill}%"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Footer Info and Action -->
+                    <div class="flex justify-between items-center">
+                        <span class="text-xs text-gray-400">Updated: ${lastUpdated}</span>
+                        <button onclick="event.stopPropagation(); openModal('${bin.bin_id}');" class="text-blue-600 hover:text-blue-800 text-sm font-medium">
+                            View Details
+                        </button>
+                    </div>
+                </div>
+            `;
+            container.insertAdjacentHTML('beforeend', widgetHtml);
+        }
+        
+        // --- MAP RENDERING ---
+        async function renderMap(registeredBins) {
+            const lats = [];
+            const lons = [];
+            const text = [];
+            const colors = [];
+            
+            let vehicleLat = [];
+            let vehicleLon = [];
+            let vehicleText = [];
+
+            // 1. Fetch Vehicle Route Data
+            let routeData = null;
+            try {
+                const routeResponse = await fetch('/api/v1/collection/route');
+                const routeResult = await routeResponse.json();
+                
+                if (routeResponse.ok && routeResult.success) {
+                    routeData = routeResult.route;
+                    
+                    routeData.path_history.forEach(p => {
+                        vehicleLat.push(p.latitude);
+                        vehicleLon.push(p.longitude);
+                    });
+                    
+                    if (routeData.current_position) {
+                        vehicleLat.push(routeData.current_position.latitude);
+                        vehicleLon.push(routeData.current_position.longitude);
+                        vehicleText.push(`<b>${routeData.vehicle_id}</b><br>Status: ${routeData.status}<br>Time: ${new Date(routeData.timestamp).toLocaleTimeString()}`);
+                    }
+                }
+            } catch (e) {
+                console.error("Error fetching vehicle route:", e);
+            }
+
+
+            // 2. Process Bin Data for Mapbox plot
+            let isAnyCritical = false;
+            registeredBins.forEach(bin => {
+                const latestData = telemetryMap[bin.bin_id] || {};
+                const currentFill = latestData.fill_percentage !== undefined ? latestData.fill_percentage : 0; 
+                const status = getStatusColor(currentFill);
+                
+                if (currentFill >= 98) {
+                    isAnyCritical = true;
+                }
+
+                lats.push(bin.latitude);
+                lons.push(bin.longitude);
+                colors.push(status.marker);
+                
+                let binText = `<b>${bin.bin_id}</b><br>
+                                Location: ${bin.location_name}<br>
+                                Fill Level: ${currentFill}%<br>
+                                Status: ${status.status}<br>
+                                Supervisor: ${bin.supervisor_name}`;
+                
+                if (latestData.collection_time) {
+                    binText += `<br>Collected: ${new Date(latestData.collection_time).toLocaleTimeString()}`;
+                }
+
+                text.push(binText);
+            });
+            
+            // 3. Audio & UI Alert Handling
+            const alertContainer = document.getElementById('criticalAlertContainer');
+            if (isAnyCritical) {
+                playAlertSiren();
+                alertContainer.classList.remove('hidden');
+                alertContainer.classList.add('alert-pulsing');
+                alertContainer.innerHTML = `<p class="text-sm font-semibold text-red-700 flex items-center">
+                    <svg class="w-4 h-4 mr-1 animate-pulse" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
+                    OVERFLOW WARNING! One or more bins reached 98% full.
+                </p>`;
+            } else {
+                stopAlertSiren();
+                alertContainer.classList.add('hidden');
+                alertContainer.classList.remove('alert-pulsing');
+            }
+            
+            // Hyderabad Central Point (Approximate center)
+            const centerLat = 17.4042;
+            const centerLon = 78.4715; 
+
+            // 4. Define the Map Layers
+            const mapData = [
+                // 1. Bin Markers (Scatter Mapbox)
+                {
+                    type: 'scattermapbox',
+                    lat: lats,
+                    lon: lons,
+                    mode: 'markers',
+                    marker: {
+                        size: 14,
+                        color: colors,
+                        opacity: 0.9,
+                    },
+                    text: text,
+                    hoverinfo: 'text',
+                    name: 'Dustbins'
+                },
+            ];
+
+            // Add Vehicle Trace only if path history exists
+            if (routeData && vehicleLat.length > 1) {
+                 mapData.push({
+                    type: 'scattermapbox',
+                    lat: vehicleLat.slice(0, -1),
+                    lon: vehicleLon.slice(0, -1),
+                    mode: 'lines',
+                    line: { width: 3, color: '#3B82F6' },
+                    name: 'Vehicle Path',
+                    hoverinfo: 'none'
+                });
+                // Add Vehicle Head Marker
+                mapData.push({
+                    type: 'scattermapbox',
+                    lat: [vehicleLat[vehicleLat.length - 1]],
+                    lon: [vehicleLon[vehicleLon.length - 1]],
+                    mode: 'markers',
+                    marker: {
+                        size: 30,
+                        symbol: 'car', 
+                        color: 'blue'
+                    },
+                    text: vehicleText,
+                    hoverinfo: 'text',
+                    name: 'Collector Vehicle'
+                });
+            }
+
+
+            // 5. Define the Map Layout
+            const layout = {
+                mapbox: {
+                    style: 'open-street-map', 
+                    accesstoken: MAPBOX_TOKEN,
+                    center: { lat: centerLat, lon: centerLon },
+                    zoom: 10 
+                },
+                margin: { r: 0, t: 0, l: 0, b: 0 },
+                showlegend: true,
+                height: document.getElementById('mapContainer').offsetHeight || 500,
+                autosize: true
+            };
+            
+            const mapDiv = document.getElementById('mapContainer');
+            if (mapDiv) {
+                Plotly.newPlot('mapContainer', mapData, layout, {responsive: true});
+            }
+        }
+        
+        // --- MAIN DATA FETCHING LOOP ---
+        async function fetchAndRenderBins() {
+            const loadingIndicator = document.getElementById('loadingIndicator');
+            const mapDiv = document.getElementById('mapContainer');
+
+            if (loadingIndicator) {
+                loadingIndicator.textContent = "Fetching registered bins and live status...";
+            }
+            container.innerHTML = ''; 
+            telemetryMap = {}; 
+
+            try {
+                // 1. Fetch Static Bin Information
+                const binResponse = await fetch('/api/v1/bins/registered');
+                const binResult = await binResponse.json();
+
+                if (!binResponse.ok || !binResult.success) {
+                    throw new Error(binResult.message || 'Failed to fetch static bin data.');
+                }
+                const registeredBins = binResult.bins;
+                allBinsData = registeredBins; 
+
+                if (registeredBins.length === 0) {
+                    container.innerHTML = `<div class="col-span-full text-center p-10 text-gray-600 border border-gray-300 rounded-xl bg-white">
+                                            <p class="text-xl font-semibold mb-2">No Bins Registered Yet</p>
+                                            <p>Click the "Register Bin" button to add your first smart dustbin to the system.</p>
+                                        </div>`;
+                    if (mapDiv) {
+                        Plotly.purge(mapDiv);
+                        renderMap([]); 
+                    }
+                    return;
+                }
+                
+                // 2. Fetch Latest Telemetry Data
+                const telemetryResponse = await fetch('/api/v1/telemetry/latest');
+                const telemetryResult = await telemetryResponse.json();
+                
+                if (telemetryResponse.ok && telemetryResult.success) {
+                    telemetryResult.latest_data.forEach(item => {
+                        telemetryMap[item.bin_id] = item;
+                    });
+                }
+                
+                // 3. Fetch AI Analysis for all bins (to get collection history)
+                for (const bin of registeredBins) {
+                    const analysisResponse = await fetch(`/api/v1/bin/analysis/${bin.bin_id}`);
+                    const analysisResult = await analysisResponse.json();
+
+                    if (analysisResponse.ok && analysisResult.success) {
+                         // Merge collection history into the telemetry map for chart/modal use
+                        const latestTel = telemetryMap[bin.bin_id] || {};
+                        latestTel.collection_history = analysisResult.analysis.collection_history;
+                        telemetryMap[bin.bin_id] = latestTel;
+                    }
+                }
+                
+                // 4. Render Widgets
+                registeredBins.forEach(bin => {
+                    createBinWidget(bin);
+                });
+                
+                // 5. Render Map
+                await renderMap(registeredBins);
+
+                // 6. Initialize Chart (select the first bin by default)
+                const chartDiv = document.getElementById('chartContainer');
+                if (registeredBins.length > 0 && chartDiv.innerHTML.includes('Click a bin')) {
+                     renderHistoricalChart(registeredBins[0].bin_id, registeredBins[0].location_name);
+                }
+
+            } catch (error) {
+                container.innerHTML = `<div class="col-span-full text-center p-10 bg-red-100 text-red-700 border border-red-300 rounded-xl">
+                                        CRITICAL BACKEND ERROR: ${error.message}. <br>
+                                        Please ensure **MySQL server is running** and the **authentication is fixed** (mysql_native_password).
+                                    </div>`;
+                console.error("Fetch Error:", error);
+            }
+        }
+
+        // --- INITIALIZATION ---
+        document.addEventListener('DOMContentLoaded', () => {
+            // Set initial tab to overview
+            switchTab('overview'); 
+            fetchAndRenderBins();
+            // Start the polling loop for real-time updates
+            setInterval(fetchAndRenderBins, 5000); 
+        });
+
+    </script>
+</body>
+</html>

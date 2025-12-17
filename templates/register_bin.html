@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }} | Smart Waste</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f0fdf4;
+        }
+        .form-card {
+            box-shadow: 0 10px 30px rgba(16, 185, 129, 0.2);
+        }
+        .submit-button {
+            transition: all 0.2s ease-in-out;
+        }
+        .submit-button:hover {
+            box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);
+            transform: translateY(-2px);
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+    <!-- Top Navigation Bar -->
+    <nav class="flex justify-between items-center py-4 px-6 bg-white rounded-xl shadow-md sticky top-4 z-10">
+        <h1 class="text-xl font-bold text-green-600">
+            <a href="/dashboard">TN Smart Waste Portal</a>
+        </h1>
+        <div class="space-x-4">
+            <a href="/dashboard" class="text-gray-600 hover:text-green-600 font-medium">Dashboard</a>
+            <a href="/" class="text-red-500 hover:text-red-700 font-medium" onclick="event.preventDefault(); window.location.href='/logout';">Logout</a>
+        </div>
+    </nav>
+
+    <!-- Form Container -->
+    <div class="flex justify-center mt-10">
+        <div class="w-full max-w-2xl bg-white p-6 md:p-10 rounded-2xl form-card">
+            <h2 class="text-2xl font-bold text-gray-800 mb-6 border-b pb-2">
+                New Dustbin Registration
+            </h2>
+
+            <form id="registerForm">
+                <!-- Message Box -->
+                <div id="messageBox" class="p-3 rounded-lg text-sm hidden mb-6"></div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- Bin ID -->
+                    <div>
+                        <label for="bin_id" class="block text-sm font-medium text-gray-700">Bin ID (Unique)</label>
+                        <input type="text" id="bin_id" name="bin_id" required placeholder="E.g., BIN-005"
+                               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 shadow-sm">
+                    </div>
+                    
+                    <!-- Max Capacity -->
+                    <div>
+                        <label for="max_capacity_cm" class="block text-sm font-medium text-gray-700">Max Capacity (cm)</label>
+                        <input type="number" id="max_capacity_cm" name="max_capacity_cm" required min="50" max="300" value="150"
+                               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 shadow-sm">
+                    </div>
+
+                    <!-- Latitude -->
+                    <div>
+                        <label for="latitude" class="block text-sm font-medium text-gray-700">Latitude</label>
+                        <input type="number" id="latitude" name="latitude" required step="0.000001" placeholder="E.g., 13.0827"
+                               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 shadow-sm">
+                    </div>
+
+                    <!-- Longitude -->
+                    <div>
+                        <label for="longitude" class="block text-sm font-medium text-gray-700">Longitude</label>
+                        <input type="number" id="longitude" name="longitude" required step="0.000001" placeholder="E.g., 80.2707"
+                               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 shadow-sm">
+                    </div>
+                    
+                    <!-- Supervisor Name -->
+                    <div>
+                        <label for="supervisor_name" class="block text-sm font-medium text-gray-700">Supervisor Name</label>
+                        <input type="text" id="supervisor_name" name="supervisor_name" required placeholder="E.g., A. Selvam"
+                               class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 shadow-sm">
+                    </div>
+
+                    <!-- Bin Type -->
+                    <div>
+                        <label for="bin_type" class="block text-sm font-medium text-gray-700">Waste Type</label>
+                        <select id="bin_type" name="bin_type" 
+                                class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 shadow-sm bg-white">
+                            <option value="General">General/Mixed</option>
+                            <option value="Segregated-Wet">Segregated (Wet/Organic)</option>
+                            <option value="Segregated-Dry">Segregated (Dry/Recyclable)</option>
+                            <option value="Hazardous">Hazardous</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Location Name (Full Width) -->
+                <div class="mt-6">
+                    <label for="location_name" class="block text-sm font-medium text-gray-700">Descriptive Location</label>
+                    <input type="text" id="location_name" name="location_name" placeholder="E.g., Near Apollo Hospital, Gate 2"
+                           class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 shadow-sm">
+                </div>
+
+                <!-- Submit Button -->
+                <div class="mt-8">
+                    <button type="submit" 
+                            class="submit-button w-full py-3 px-4 border border-transparent rounded-xl shadow-lg text-lg font-bold text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500/50">
+                        Register Dustbin
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <script>
+        document.getElementById('registerForm').addEventListener('submit', async function(event) {
+            event.preventDefault();
+
+            const form = event.target;
+            const formData = new FormData(form);
+            const data = {};
+            formData.forEach((value, key) => {
+                // Convert number strings to float/int where necessary
+                if (key === 'latitude' || key === 'longitude' || key === 'max_capacity_cm') {
+                    data[key] = parseFloat(value);
+                } else {
+                    data[key] = value;
+                }
+            });
+
+            const messageBox = document.getElementById('messageBox');
+            messageBox.classList.add('hidden');
+            messageBox.textContent = '';
+
+            try {
+                const response = await fetch('/api/v1/register_bin', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    messageBox.textContent = result.message + " Redirecting to Dashboard...";
+                    messageBox.className = 'p-3 rounded-lg text-sm mb-6 bg-green-100 text-green-700 border border-green-300';
+                    form.reset(); 
+
+                    setTimeout(() => {
+                        window.location.href = '/dashboard';
+                    }, 2000);
+                } else {
+                    messageBox.textContent = result.message;
+                    messageBox.className = 'p-3 rounded-lg text-sm mb-6 bg-red-100 text-red-700 border border-red-300';
+                }
+            } catch (error) {
+                messageBox.textContent = 'A network error occurred during registration.';
+                messageBox.className = 'p-3 rounded-lg text-sm mb-6 bg-red-100 text-red-700 border border-red-300';
+                console.error('Registration error:', error);
+            }
+        });
+    </script>
+</body>
+</html>
