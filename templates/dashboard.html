@@ -23,7 +23,9 @@
         }
         /* Custom map container size */
         #mapContainer {
-            min-height: 55vh;
+            /* FIXED HEIGHT to prevent glitching/resizing */
+            height: 55vh; 
+            min-height: 400px;
             border-radius: 1rem;
             box-shadow: 0 10px 20px rgba(0, 0, 0, 0.05);
         }
@@ -132,7 +134,7 @@
                                 <!-- Placeholder alerts updated dynamically -->
                                 <div id="criticalAlertContainer" class="p-3 bg-red-50 border border-red-200 rounded-lg hidden">
                                     <p class="text-sm font-semibold text-red-700 flex items-center">
-                                        <svg class="w-4 h-4 mr-1 animate-pulse" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
+                                        <svg class="w-4 h-4 mr-1 animate-pulse" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path></path></svg>
                                         OVERFLOW WARNING!
                                     </p>
                                 </div>
@@ -309,7 +311,7 @@
             return { bg: 'bg-green-500', border: 'border-green-500', text: 'text-green-500', status: 'NORMAL', icon: '🟢', marker: 'green' };
         }
         
-        // --- TAB SWITCHING LOGIC (MISSING IN ORIGINAL HTML) ---
+        // --- TAB SWITCHING LOGIC ---
         function switchTab(tabId) {
             // Hide all tab panes
             document.querySelectorAll('.tab-pane').forEach(pane => {
@@ -418,7 +420,7 @@
                     // Close and refresh after successful log
                     setTimeout(() => {
                         closeModal();
-                        fetchAndRenderBins(); // Re-fetch to update widgets and history
+                        fetchStaticDataAndInitialize(false); // Only refresh live data
                     }, 1500);
 
                 } else {
@@ -444,6 +446,7 @@
             // 1. Fetch AI Analysis and History
             let analysis = null;
             try {
+                // Ensure we fetch the latest history before opening the modal
                 const analysisResponse = await fetch(`/api/v1/bin/analysis/${binId}`);
                 const analysisResult = await analysisResponse.json();
                 
@@ -518,7 +521,7 @@
             for (let i = 0; i < days * pointsPerDay; i++) {
                 const hour = (i % pointsPerDay) / 4;
                 const timePoint = new Date();
-                timePoint.setTime(timePoint.getTime() - (i * 15 * 60 * 1000)); 
+                timePoint.setTime(timePoint.getTime() - (i * 15 * 60 * 60 * 1000 / 4)); // 15 minute interval
 
                 let baseFill = 50;
                 if (hour >= 8 && hour <= 20) {
@@ -573,7 +576,82 @@
             Plotly.newPlot('chartContainer', data, layout, {responsive: true});
         }
         
-        // --- WIDGET RENDERING ---
+        // --- WIDGET RENDERING / UPDATE ---
+        function updateBinWidgets() {
+            let isAnyCritical = false;
+            
+            if (allBinsData.length === 0) return;
+
+            // 1. Clear container only if the number of bins has changed or it's the first run
+            const existingBinIds = Array.from(container.children).map(el => el.id.replace('widget-', ''));
+            const currentBinIds = allBinsData.map(b => b.bin_id);
+
+            // If the structure needs a complete redraw (e.g., bin count changed or map must redraw)
+            const structureChanged = existingBinIds.length !== currentBinIds.length || !currentBinIds.every(id => existingBinIds.includes(id));
+            
+            if (structureChanged) {
+                container.innerHTML = '';
+                allBinsData.forEach(bin => {
+                    createBinWidget(bin);
+                });
+            }
+
+            // 2. Update existing elements dynamically
+            allBinsData.forEach(bin => {
+                const widget = document.getElementById(`widget-${bin.bin_id}`);
+                const latestData = telemetryMap[bin.bin_id] || {};
+                const currentFill = latestData.fill_percentage !== undefined ? latestData.fill_percentage : 0; 
+                const colors = getStatusColor(currentFill);
+                const lastUpdated = latestData.timestamp ? new Date(latestData.timestamp).toLocaleTimeString() : 'N/A';
+                const isCritical = currentFill >= 98;
+
+                if (isCritical) {
+                    isAnyCritical = true;
+                }
+
+                if (widget) {
+                    // Update dynamic parts only:
+                    const fillPercentSpan = widget.querySelector('.text-2xl.font-bold');
+                    const statusSpan = widget.querySelector('.text-xs.font-semibold');
+                    const progressBar = widget.querySelector('.h-2.rounded-full.bg-gray-200 > div');
+                    const lastUpdatedSpan = widget.querySelector('.text-xs.text-gray-400');
+                    
+                    fillPercentSpan.textContent = `${currentFill}%`;
+                    statusSpan.textContent = colors.status;
+                    progressBar.style.width = `${currentFill}%`;
+                    lastUpdatedSpan.textContent = `Updated: ${lastUpdated}`;
+                    
+                    // Update classes/colors
+                    widget.className = `widget-card bg-white p-5 rounded-xl border-l-4 ${colors.border} ${isCritical ? 'alert-pulsing border-2' : ''} hover:shadow-lg transition duration-200`;
+                    statusSpan.className = `text-xs font-semibold px-2 py-0.5 rounded-full ${colors.bg} text-white`;
+                    progressBar.className = `h-2 rounded-full ${colors.bg}`;
+                }
+            });
+            
+            // 3. Handle Map Update
+            renderMap(allBinsData);
+            
+            // 4. Handle Alerts
+            const alertContainer = document.getElementById('criticalAlertContainer');
+            if (isAnyCritical) {
+                playAlertSiren();
+                alertContainer.classList.remove('hidden');
+                alertContainer.classList.add('alert-pulsing');
+            } else {
+                stopAlertSiren();
+                alertContainer.classList.add('hidden');
+                alertContainer.classList.remove('alert-pulsing');
+            }
+            
+            // 5. Update Chart (if a bin is selected)
+            if (selectedBinForChart) {
+                const bin = allBinsData.find(b => b.bin_id === selectedBinForChart);
+                if (bin) {
+                    renderHistoricalChart(bin.bin_id, bin.location_name);
+                }
+            }
+        }
+        
         function createBinWidget(bin) {
             const latestData = telemetryMap[bin.bin_id] || {};
             const currentFill = latestData.fill_percentage !== undefined ? latestData.fill_percentage : 0; 
@@ -618,6 +696,7 @@
         
         // --- MAP RENDERING ---
         async function renderMap(registeredBins) {
+            // ... (rest of renderMap logic remains the same)
             const lats = [];
             const lons = [];
             const text = [];
@@ -680,21 +759,7 @@
                 text.push(binText);
             });
             
-            // 3. Audio & UI Alert Handling
-            const alertContainer = document.getElementById('criticalAlertContainer');
-            if (isAnyCritical) {
-                playAlertSiren();
-                alertContainer.classList.remove('hidden');
-                alertContainer.classList.add('alert-pulsing');
-                alertContainer.innerHTML = `<p class="text-sm font-semibold text-red-700 flex items-center">
-                    <svg class="w-4 h-4 mr-1 animate-pulse" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
-                    OVERFLOW WARNING! One or more bins reached 98% full.
-                </p>`;
-            } else {
-                stopAlertSiren();
-                alertContainer.classList.add('hidden');
-                alertContainer.classList.remove('alert-pulsing');
-            }
+            // 3. Audio & UI Alert Handling (Alerts handled in updateBinWidgets now)
             
             // Hyderabad Central Point (Approximate center)
             const centerLat = 17.4042;
@@ -768,26 +833,49 @@
             }
         }
         
-        // --- MAIN DATA FETCHING LOOP ---
-        async function fetchAndRenderBins() {
+        // --- LIVE DATA POLLING LOOP ---
+        async function pollLiveUpdates() {
+            // 1. Fetch Latest Telemetry Data (Simulation)
+            const telemetryResponse = await fetch('/api/v1/telemetry/latest');
+            const telemetryResult = await telemetryResponse.json();
+            
+            if (telemetryResponse.ok && telemetryResult.success) {
+                telemetryMap = {}; // Clear map for fresh data
+                telemetryResult.latest_data.forEach(item => {
+                    telemetryMap[item.bin_id] = item;
+                });
+            }
+
+            // 2. Fetch AI Analysis for all bins (to get collection history)
+            // This is required to get fresh history data after a collection log
+            for (const bin of allBinsData) {
+                const analysisResponse = await fetch(`/api/v1/bin/analysis/${bin.bin_id}`);
+                const analysisResult = await analysisResponse.json();
+
+                if (analysisResponse.ok && analysisResult.success) {
+                    const latestTel = telemetryMap[bin.bin_id] || {};
+                    latestTel.collection_history = analysisResult.analysis.collection_history;
+                    telemetryMap[bin.bin_id] = latestTel;
+                }
+            }
+            
+            // 3. Update existing DOM elements and re-render map
+            updateBinWidgets();
+        }
+
+        // --- STATIC DATA FETCH (Runs once) ---
+        async function fetchStaticDataAndInitialize(isFirstLoad = true) {
             const loadingIndicator = document.getElementById('loadingIndicator');
             const mapDiv = document.getElementById('mapContainer');
-
-            // --- IMPORTANT: Clear the container before starting ---
-            if (loadingIndicator && container.children.length === 0) { 
-                container.appendChild(loadingIndicator);
+            
+            if (isFirstLoad) {
+                if (loadingIndicator) {
+                     loadingIndicator.textContent = "Fetching registered bins and initializing...";
+                }
+                container.innerHTML = ''; 
             }
-            // ------------------------------------------------------
-            container.innerHTML = ''; 
-            telemetryMap = {}; 
-
-            if (loadingIndicator) {
-                 loadingIndicator.textContent = "Fetching registered bins and live status...";
-            }
-
 
             try {
-                // 1. Fetch Static Bin Information
                 const binResponse = await fetch('/api/v1/bins/registered');
                 const binResult = await binResponse.json();
 
@@ -798,6 +886,7 @@
                 allBinsData = registeredBins; 
 
                 if (registeredBins.length === 0) {
+                    // Handle case where no bins are registered
                     container.innerHTML = `<div class="col-span-full text-center p-10 text-gray-600 border border-gray-300 rounded-xl bg-white">
                                                 <p class="text-xl font-semibold mb-2">No Bins Registered Yet</p>
                                                 <p>Click the "Register Bin" button to add your first smart dustbin to the system.</p>
@@ -809,50 +898,14 @@
                     return;
                 }
                 
-                // 2. Fetch Latest Telemetry Data (Simulation)
-                const telemetryResponse = await fetch('/api/v1/telemetry/latest');
-                const telemetryResult = await telemetryResponse.json();
-                
-                if (telemetryResponse.ok && telemetryResult.success) {
-                    telemetryResult.latest_data.forEach(item => {
-                        telemetryMap[item.bin_id] = item;
-                    });
+                // On first load, start polling and render widgets/map structure
+                if (isFirstLoad) {
+                    // Start the polling loop (pollLiveUpdates will handle widget/map rendering)
+                    setInterval(pollLiveUpdates, REFRESH_INTERVAL); 
                 }
-                
-                // 3. Fetch AI Analysis for all bins (to get collection history)
-                // Running this for every bin is required to populate the history for the modal/chart
-                for (const bin of registeredBins) {
-                    const analysisResponse = await fetch(`/api/v1/bin/analysis/${bin.bin_id}`);
-                    const analysisResult = await analysisResponse.json();
 
-                    if (analysisResponse.ok && analysisResult.success) {
-                         // Merge collection history into the telemetry map for chart/modal use
-                        const latestTel = telemetryMap[bin.bin_id] || {};
-                        latestTel.collection_history = analysisResult.analysis.collection_history;
-                        telemetryMap[bin.bin_id] = latestTel;
-                    }
-                }
-                
-                // 4. Render Widgets
-                container.innerHTML = ''; // Clear the loading indicator
-                registeredBins.forEach(bin => {
-                    createBinWidget(bin);
-                });
-                
-                // 5. Render Map
-                await renderMap(registeredBins);
-
-                // 6. Initialize Chart (select the first bin by default)
-                const chartDiv = document.getElementById('chartContainer');
-                if (registeredBins.length > 0 && !selectedBinForChart) {
-                     renderHistoricalChart(registeredBins[0].bin_id, registeredBins[0].location_name);
-                } else if (selectedBinForChart) {
-                    // Update the currently selected chart
-                     const bin = registeredBins.find(b => b.bin_id === selectedBinForChart);
-                     if (bin) {
-                        renderHistoricalChart(bin.bin_id, bin.location_name);
-                     }
-                }
+                // Initial render of widgets (full structure) and map
+                updateBinWidgets(); 
 
             } catch (error) {
                 container.innerHTML = `<div class="col-span-full text-center p-10 bg-red-100 text-red-700 border border-red-300 rounded-xl">
@@ -867,9 +920,8 @@
         document.addEventListener('DOMContentLoaded', () => {
             // Set initial tab to overview
             switchTab('overview'); 
-            fetchAndRenderBins();
-            // Start the polling loop for real-time updates (5 seconds)
-            setInterval(fetchAndRenderBins, REFRESH_INTERVAL); 
+            // Start the static fetch, which initializes the polling loop if successful
+            fetchStaticDataAndInitialize(true);
         });
 
     </script>
