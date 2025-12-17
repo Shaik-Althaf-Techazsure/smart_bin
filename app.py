@@ -403,10 +403,21 @@ def get_bin_analysis(bin_id):
         # Fetch collection history (from PostgreSQL) to provide detailed performance data
         history = get_collection_history(conn, bin_id)
         
+        # --- FIX: Retrieve ALL simulated telemetry data ---
+        telemetry_response = get_latest_telemetry().get_json(silent=True)
+        all_simulated_data = telemetry_response.get('latest_data', [])
+        
+        # Filter for the specific bin_id
+        current_bin_data = next((item for item in all_simulated_data if item['bin_id'] == bin_id), None)
+
+        if not current_bin_data:
+            return jsonify({"success": False, "message": f"Simulated telemetry data not found for bin {bin_id}."}), 404
+
+        simulated_fill = current_bin_data['fill_percentage']
+        # --------------------------------------------------------------------------
+        
         # Placeholder for dynamic analysis report
         # NOTE: This uses hardcoded urgency for demo purposes
-        
-        simulated_fill = get_latest_telemetry().get_json(silent=True)['latest_data'][0]['fill_percentage']
         
         if simulated_fill > 90:
             urgency = "CRITICAL"
