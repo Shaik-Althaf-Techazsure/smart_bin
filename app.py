@@ -5,6 +5,8 @@ from datetime import date, datetime
 import json
 import time
 import os # Import OS for reading environment variables
+from urllib.parse import urlparse # Import for parsing the complex DB URL
+import psycopg2.extras # Needed for DictCursor
 
 # --- FIREBASE ADMIN SDK IMPORTS ---
 import firebase_admin
@@ -17,7 +19,6 @@ USER_LOGGED_IN = False
 
 # --- FIREBASE SECURE CREDENTIAL LOADING ---
 # 1. Read JSON content from the environment variable (Render setting)
-# 2. FIREBASE_URL is still defined here
 SERVICE_ACCOUNT_JSON = os.environ.get("FIREBASE_CREDENTIALS_JSON")
 FIREBASE_URL = "https://smart-garbage-b38f0-default-rtdb.asia-southeast1.firebasedatabase.app/" 
 
@@ -41,24 +42,41 @@ except Exception as e:
     pass
 
 
-# --- 2. DATABASE CONFIGURATION (PostgreSQL Cloud Settings) ---
-# CRITICAL: Read connection URL from Render environment variable
-DB_URL = os.environ.get('DATABASE_URL')
+# --- 2. DATABASE CONFIGURATION (PostgreSQL Cloud Settings - Individual Params) ---
+# CRITICAL: Read individual connection parameters from Render environment variables
+DB_HOST = os.environ.get('DB_HOST')
+DB_USER = os.environ.get('DB_USER')
+DB_PASSWORD = os.environ.get('DB_PASSWORD')
+DB_PORT = os.environ.get('DB_PORT', '5432') # Default PostgreSQL port
+DB_NAME = os.environ.get('DB_NAME')
 
 def get_db_connection():
-    """Establishes and returns a new PostgreSQL database connection using DB_URL."""
-    if not DB_URL:
-        # This will ONLY run if DATABASE_URL is missing in the environment.
-        print("FATAL: DATABASE_URL environment variable is not set.")
+    """
+    Establishes and returns a new PostgreSQL database connection using individual parameters.
+    Explicitly forces SSL mode for Supabase compatibility.
+    """
+    if not all([DB_HOST, DB_USER, DB_PASSWORD, DB_NAME]):
+        print("FATAL: One or more database environment variables (HOST, USER, PASSWORD, NAME) are missing.")
         return None
         
     try:
-        # psycopg2 can connect using the full URI string
-        # We assume the PostgreSQL connection string is provided in the DATABASE_URL environment variable
-        conn = psycopg2.connect(DB_URL)
+        # Build connection parameters explicitly
+        conn_params = {
+            'dbname': DB_NAME, 
+            'user': DB_USER,
+            'password': DB_PASSWORD,
+            'host': DB_HOST,
+            'port': DB_PORT,
+            'sslmode': 'require' # Crucial for Supabase security
+        }
+
+        conn = psycopg2.connect(**conn_params)
         return conn
     except psycopg2.Error as err:
         print(f"Error connecting to PostgreSQL: {err}")
+        return None
+    except Exception as e:
+        print(f"Error establishing connection: {e}")
         return None
 
 # --- 3. CORE UTILITIES (PostgreSQL History & Logging) ---
@@ -68,7 +86,6 @@ def get_latest_alert_time(conn, bin_id):
     Finds the time of the latest 'FULL' alert for a bin based on PostgreSQL Telemetry history.
     """
     try:
-        # Note: psycopg2 default cursor returns tuples; using dictionary=True is for MySQL
         cursor = conn.cursor()
         query = """
         SELECT timestamp FROM telemetry 
@@ -80,7 +97,6 @@ def get_latest_alert_time(conn, bin_id):
         result = cursor.fetchone()
         
         if result:
-            # We fetch the first element of the tuple result
             return result[0] 
         return None
     except Exception as e:
@@ -93,7 +109,6 @@ def get_latest_alert_time(conn, bin_id):
 def get_collection_history(conn, bin_id):
     """Fetches the collection history and performance metrics for a bin."""
     try:
-        # Use simple cursor; data will be fetched as tuples
         cursor = conn.cursor()
         query = """
         SELECT collection_time, time_to_collect_min, is_on_time, reward_issued 
@@ -102,7 +117,6 @@ def get_collection_history(conn, bin_id):
         ORDER BY collection_time DESC;
         """
         cursor.execute(query, (bin_id,))
-        # Fetch columns manually for dict output, since dictionary=True is MySQL-specific
         columns = [desc[0] for desc in cursor.description]
         history_list = [dict(zip(columns, row)) for row in cursor.fetchall()]
         return history_list
@@ -175,7 +189,7 @@ def register_bin():
 
     conn = get_db_connection()
     if conn is None:
-        return jsonify({"success": False, "message": "Database connection failed. Check DATABASE_URL."}), 500
+        return jsonify({"success": False, "message": "Database connection failed. Check DB variables."}), 500
 
     try:
         cursor = conn.cursor()
@@ -223,7 +237,7 @@ def get_registered_bins():
     """Fetches all static information for all registered bins from PostgreSQL."""
     conn = get_db_connection()
     if conn is None:
-        return jsonify({"success": False, "message": "Database connection failed. Check DATABASE_URL."}), 500
+        return jsonify({"success": False, "message": "Database connection failed. Check DB variables."}), 500
     
     try:
         cursor = conn.cursor()
@@ -258,15 +272,16 @@ def get_latest_telemetry():
         return jsonify({"success": False, "message": "Database connection failed."}), 500
         
     try:
-        cursor = pg_conn.cursor(cursor_factory=psycopg2.extras.DictCursor) # Using DictCursor for easy fetching
+        cursor = pg_conn.cursor(cursor_factory=psycopg2.extras.DictCursor) 
         cursor.execute("SELECT bin_id FROM dustbins;")
         registered_bins = cursor.fetchall()
     except Exception as e:
         print(f"Error fetching registered bins from PostgreSQL: {e}")
         return jsonify({"success": False, "message": "Could not retrieve registered bin list."}), 500
     finally:
-        cursor.close()
-        pg_conn.close()
+        if 'cursor' in locals() and cursor and cursor.connection and not cursor.connection.closed:
+            cursor.close()
+            pg_conn.close()
 
     latest_data = []
     
@@ -308,7 +323,7 @@ def get_bin_analysis(bin_id):
     """Placeholder for Agentic AI analysis of a single bin, including performance history."""
     conn = get_db_connection()
     if conn is None:
-        return jsonify({"success": False, "message": "Database connection failed. Check DATABASE_URL."}), 500
+        return jsonify({"success": False, "message": "Database connection failed. Check DB variables."}), 500
     
     try:
         # Fetch collection history (from PostgreSQL) to provide detailed performance data
@@ -358,7 +373,7 @@ def log_collection():
 
     conn = get_db_connection()
     if conn is None:
-        return jsonify({"success": False, "message": "Database connection failed. Check DATABASE_URL."}), 500
+        return jsonify({"success": False, "message": "Database connection failed. Check DB variables."}), 500
     
     collection_time = datetime.now()
     alert_time = get_latest_alert_time(conn, bin_id)
@@ -451,4 +466,5 @@ if __name__ == '__main__':
     print("-------------------------------------------------------")
     print("Flask Server running at: http://127.0.0.1:5000/")
     print("-------------------------------------------------------")
-    app.run(debug=True, port=5000)
+    # For production deployment (Render), we typically rely on gunicorn
+    # app.run(debug=True, port=5000)
