@@ -53,7 +53,7 @@ DB_NAME = os.environ.get('DB_NAME')
 def get_db_connection():
     """
     Establishes and returns a new PostgreSQL database connection using individual parameters.
-    Explicitly forces SSL mode for Supabase compatibility.
+    Updated to use sslmode='prefer' to bypass potential connection handshake issues.
     """
     if not all([DB_HOST, DB_USER, DB_PASSWORD, DB_NAME]):
         print("FATAL: One or more database environment variables (HOST, USER, PASSWORD, NAME) are missing.")
@@ -67,7 +67,7 @@ def get_db_connection():
             'password': DB_PASSWORD,
             'host': DB_HOST,
             'port': DB_PORT,
-            'sslmode': 'require' # Crucial for Supabase security
+            'sslmode': 'prefer' # CHANGED to prefer to bypass handshake issue
         }
 
         conn = psycopg2.connect(**conn_params)
@@ -76,7 +76,7 @@ def get_db_connection():
         print(f"Error connecting to PostgreSQL: {err}")
         return None
     except Exception as e:
-        print(f"Error establishing connection: {e}")
+        print(f"Error parsing DB_URL or establishing connection: {e}")
         return None
 
 # --- 3. CORE UTILITIES (PostgreSQL History & Logging) ---
