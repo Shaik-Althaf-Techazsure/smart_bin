@@ -8,39 +8,16 @@ import os # Import OS for reading environment variables
 from urllib.parse import urlparse # Import for parsing the complex DB URL
 import psycopg2.extras # Needed for DictCursor
 
-# --- FIREBASE ADMIN SDK IMPORTS ---
-import firebase_admin
-from firebase_admin import credentials, db 
+# --- FIREBASE ADMIN SDK IMPORTS (REMOVED FOR SIMULATION) ---
+# Removed all Firebase dependencies as requested.
 
-# --- 1. FLASK APP INITIALIZATION & FIREBASE SETUP ---
+# --- 1. FLASK APP INITIALIZATION ---
 app = Flask(__name__)
 # Simple session replacement for a demo environment
 USER_LOGGED_IN = False 
 
-# --- FIREBASE SECURE CREDENTIAL LOADING ---
-# 1. Read JSON content from the environment variable (Render setting)
-SERVICE_ACCOUNT_JSON = os.environ.get("FIREBASE_CREDENTIALS_JSON")
-FIREBASE_URL = "https://smart-garbage-b38f0-default-rtdb.asia-southeast1.firebasedatabase.app/" 
-
-# Initialize Firebase Admin SDK
-try:
-    if SERVICE_ACCOUNT_JSON:
-        # Load credentials from the parsed JSON string
-        CRED = credentials.Certificate(json.loads(SERVICE_ACCOUNT_JSON))
-        FIREBASE_APP = firebase_admin.initialize_app(CRED, {
-            'databaseURL': FIREBASE_URL
-        })
-        FIREBASE_DB = db
-        print("✅ Firebase Admin SDK Initialized Successfully.")
-    else:
-        # Deployment will fail if this is required but not set
-        raise ValueError("FIREBASE_CREDENTIALS_JSON environment variable not set.")
-        
-except Exception as e:
-    print(f"❌ FIREBASE ADMIN SDK SETUP FAILED. Error: {e}")
-    FIREBASE_DB = None
-    pass
-
+# Removed Firebase initialization block
+FIREBASE_DB = None # Placeholder to satisfy API functions
 
 # --- 2. DATABASE CONFIGURATION (PostgreSQL Cloud Settings - Individual Params) ---
 # CRITICAL: Read individual connection parameters from Render environment variables
@@ -359,13 +336,8 @@ def get_registered_bins():
 @app.route('/api/v1/telemetry/latest', methods=['GET'])
 def get_latest_telemetry():
     """
-    Fetches the latest live telemetry data directly from Firebase RTDB 
-    for all currently registered bins (sourced from PostgreSQL).
+    SIMULATION: Fetches registered bins from PostgreSQL and generates dynamic fill data.
     """
-    if FIREBASE_DB is None:
-        return jsonify({"success": False, "message": "Firebase is not initialized."}), 500
-
-    # 1. Get list of registered bins from PostgreSQL (required to know which nodes to query)
     pg_conn = get_db_connection()
     if pg_conn is None:
         return jsonify({"success": False, "message": "Database connection failed."}), 500
@@ -383,36 +355,39 @@ def get_latest_telemetry():
             pg_conn.close()
 
     latest_data = []
-    
-    # 2. Query Firebase for the latest status of each registered bin
+    current_time_ms = int(time.time() * 1000)
+
+    # 2. Generate Simulated Live Status for each bin
     for bin_info in registered_bins:
         bin_id = bin_info['bin_id']
-        # Node structure: /dustbin-001/latest
-        # Extracts "001" from "BIN-001"
-        bin_suffix = bin_id.split("-")[-1]
-        fb_node = f'dustbin-{bin_suffix}'
         
-        try:
-            # firebase-admin syntax: reference().get()
-            fb_data = FIREBASE_DB.reference(fb_node).child("latest").get()
-            
-            if fb_data:
-                # Map Firebase data fields to the expected Telemetry fields for the dashboard
-                telemetry_record = {
-                    "bin_id": bin_id,
-                    "timestamp": fb_data.get('timestamp', datetime.now().isoformat()),
-                    "fill_level_cm": fb_data.get('garbage_level_cm', 0),
-                    "fill_percentage": fb_data.get('fill_percentage', 0),
-                    "alert_triggered": fb_data.get('segregator_required', 0), # 1 if >= 98%
-                    "is_lid_locked": 1 if fb_data.get('fill_percentage', 0) >= 90 else 0, # Simple lock rule
-                    "collection_time": None, # This comes from Collection_Log, left as None for live status
-                    "delay_minutes": 0,
-                }
-                latest_data.append(telemetry_record)
+        # Use bin_id hash and time for a simulated dynamic percentage (0-100)
+        # This simulates change over a 60 second cycle, updating every 5 seconds.
+        bin_hash = sum(ord(c) for c in bin_id)
+        
+        # Calculation: (Time + Hash) % 100 
+        # Cycles based on time (current_time_ms // 5000 is updated every 5 seconds)
+        fill_percentage_raw = (current_time_ms // 5000 + bin_hash) % 100 
+        
+        # Smooth and constrain the percentage (10% to 90%)
+        fill_percentage = (fill_percentage_raw % 80) + 10
+        fill_percentage = min(fill_percentage, 95) # Cap max fill at 95%
+        
+        # Determine lock status based on simulation
+        is_locked = 1 if fill_percentage >= 90 else 0
+        alert_triggered = 1 if fill_percentage >= 95 else 0
 
-        except Exception as e:
-            print(f"Error reading live data from Firebase for {bin_id}: {e}")
-            continue
+        telemetry_record = {
+            "bin_id": bin_id,
+            "timestamp": datetime.now().isoformat(),
+            "fill_level_cm": 15 * (100 - fill_percentage) / 100, # Simulated CM value
+            "fill_percentage": fill_percentage,
+            "alert_triggered": alert_triggered,
+            "is_lid_locked": is_locked, 
+            "collection_time": None, 
+            "delay_minutes": 0,
+        }
+        latest_data.append(telemetry_record)
 
     return jsonify({"success": True, "latest_data": latest_data}), 200
 
@@ -428,18 +403,32 @@ def get_bin_analysis(bin_id):
         # Fetch collection history (from PostgreSQL) to provide detailed performance data
         history = get_collection_history(conn, bin_id)
         
+        # Placeholder for dynamic analysis report
+        # NOTE: This uses hardcoded urgency for demo purposes
+        
+        simulated_fill = get_latest_telemetry().get_json(silent=True)['latest_data'][0]['fill_percentage']
+        
+        if simulated_fill > 90:
+            urgency = "CRITICAL"
+            issue = f"High fill level ({simulated_fill}%) detected. Requires immediate collection."
+            precautions = [
+                "Issue a high-priority alert to Collector Team A.",
+                "Remotely lock the lid mechanism to prevent spillage."
+            ]
+        elif simulated_fill > 60:
+            urgency = "HIGH"
+            issue = f"Warning: Bin approaching capacity ({simulated_fill}%)."
+            precautions = ["Verify collection schedule for this route."]
+        else:
+            urgency = "ROUTINE"
+            issue = "Normal Fill Rate."
+            precautions = ["Maintain current collection schedule."]
+
         analysis_report = {
             "bin_id": bin_id,
-            "urgency": "CRITICAL" if bin_id == "BIN-002" else "ROUTINE",
-            "core_issue": "Sensor Data Anomaly (Rapid Fluctuation)" if bin_id == "BIN-007" else ("Imminent Overflow Due to Missed Route" if bin_id == "BIN-002" else "Normal Fill Rate"),
-            "precautions": [
-                "Issue a high-priority alert to Collector Team B.",
-                "Verify Ultrasonic sensor stability (Check logs for temperature/vibration spikes).",
-                "Remotely lock the lid mechanism to prevent spillage in 2 hours."
-            ] if bin_id == "BIN-002" else [
-                "Maintain current collection schedule.",
-                "Monitor fill rate variance hourly."
-            ],
+            "urgency": urgency,
+            "core_issue": issue,
+            "precautions": precautions,
             "collection_history": [
                 {
                     "time": item['collection_time'].isoformat() if item.get('collection_time') else None,
@@ -529,7 +518,7 @@ def log_collection():
             conn.close()
 
 
-# --- 6. VEHICLE SIMULATION LOGIC ---
+# --- 6. VEHICLE SIMULATION LOGIC (RETAINED) ---
 
 SIMULATED_ROUTE = [
     (17.4300, 78.4100), 
