@@ -1,34 +1,30 @@
 from flask import Flask, render_template, request, jsonify, redirect, url_for
-# Replaced mysql.connector with psycopg2 for PostgreSQL
-import psycopg2 
+from flask_socketio import SocketIO, emit
+import psycopg2
+import psycopg2.extras
 from datetime import date, datetime
 import json
 import time
-import os # Import OS for reading environment variables
-from urllib.parse import urlparse # Import for parsing the complex DB URL
-import psycopg2.extras # Needed for DictCursor
+import os
+from urllib.parse import urlparse
 
-# --- FIREBASE ADMIN SDK IMPORTS (REMOVED FOR SIMULATION) ---
-# Removed all Firebase dependencies as requested.
-
-# --- 1. FLASK APP INITIALIZATION ---
+# --- 1. APP & SOCKETIO INITIALIZATION ---
 app = Flask(__name__)
+app.config['SECRET_KEY'] = 'volvoway_industrial_secret_2024'
+# Initialize SocketIO for real-time dashboard updates from hardware
+socketio = SocketIO(app, cors_allowed_origins="*")
+
 # Simple session replacement for a demo environment
 USER_LOGGED_IN = False 
 
-# Removed Firebase initialization block
-FIREBASE_DB = None # Placeholder to satisfy API functions
-
-# --- 2. DATABASE CONFIGURATION (PostgreSQL Cloud Settings - Individual Params) ---
-# CRITICAL: Read individual connection parameters from Render environment variables
+# --- 2. DATABASE CONFIGURATION (PostgreSQL Settings) ---
 DB_HOST = os.environ.get('DB_HOST')
 DB_USER = os.environ.get('DB_USER')
 DB_PASSWORD = os.environ.get('DB_PASSWORD')
-DB_PORT = os.environ.get('DB_PORT', '5432') # Default PostgreSQL port
+DB_PORT = os.environ.get('DB_PORT', '5432')
 DB_NAME = os.environ.get('DB_NAME')
 
-# --- 2a. EMBEDDED SQL SCHEMA FOR AUTO-CREATION ---
-# This SQL string contains all necessary CREATE TABLE statements.
+# Unified SQL Schema for Hardware, Registration, and Collection Logging
 DB_INIT_SQL = """
 -- 1. Table structure for table dustbins
 DROP TABLE IF EXISTS dustbins CASCADE;
@@ -43,26 +39,25 @@ CREATE TABLE dustbins (
   installation_date DATE DEFAULT NULL
 );
 
--- 2. Table structure for table telemetry
+-- 2. Table structure for table telemetry (Expanded for Hardware Sync)
 DROP TABLE IF EXISTS telemetry CASCADE;
 CREATE TABLE telemetry (
   record_id SERIAL PRIMARY KEY,
   bin_id VARCHAR(10) NOT NULL,
-  timestamp TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-  fill_level_cm INTEGER DEFAULT NULL,
+  timestamp TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
   fill_percentage INTEGER DEFAULT NULL,
   is_lid_locked BOOLEAN DEFAULT NULL,
-  alert_triggered BOOLEAN DEFAULT NULL,
-  collection_time TIMESTAMP WITHOUT TIME ZONE DEFAULT NULL,
-  delay_minutes INTEGER DEFAULT NULL,
+  status_msg TEXT DEFAULT 'Monitoring',
+  lat DECIMAL(9, 6) DEFAULT 0.0,
+  lon DECIMAL(9, 6) DEFAULT 0.0,
+  sats INTEGER DEFAULT 0,
   
-  -- Foreign Key Constraint (linking to dustbins)
   CONSTRAINT telemetry_fk_bin_id 
     FOREIGN KEY (bin_id) 
     REFERENCES dustbins (bin_id)
 );
 
--- 3. Table structure for table collection_log (Required by your API endpoints)
+-- 3. Table structure for table collection_log
 DROP TABLE IF EXISTS collection_log CASCADE;
 CREATE TABLE collection_log (
   log_id SERIAL PRIMARY KEY,
@@ -74,499 +69,195 @@ CREATE TABLE collection_log (
   reward_issued BOOLEAN,
   collector_id VARCHAR(10) DEFAULT NULL,
   
-  -- Foreign Key Constraint (linking to dustbins)
   CONSTRAINT collection_log_fk_bin_id
     FOREIGN KEY (bin_id)
     REFERENCES dustbins (bin_id)
 );
 """
 
-
 def get_db_connection():
-    """
-    Establishes and returns a new PostgreSQL database connection using individual parameters.
-    """
     if not all([DB_HOST, DB_USER, DB_PASSWORD, DB_NAME]):
-        print("FATAL: One or more database environment variables (HOST, USER, PASSWORD, NAME) are missing.")
         return None
-        
     try:
-        # Build connection parameters explicitly
         conn_params = {
-            'dbname': DB_NAME, 
-            'user': DB_USER,
-            'password': DB_PASSWORD,
-            'host': DB_HOST,
-            'port': DB_PORT,
-            'sslmode': 'require' # REVERTED TO REQUIRED for security/compatibility
+            'dbname': DB_NAME, 'user': DB_USER, 'password': DB_PASSWORD,
+            'host': DB_HOST, 'port': DB_PORT, 'sslmode': 'require'
         }
-        
-        # Added debug print before connection attempt
-        print(f"DEBUG: Attempting connection to {DB_HOST}:{DB_PORT} as user {DB_USER} with sslmode=require...")
-
-        conn = psycopg2.connect(**conn_params)
-        print("DEBUG: Connection SUCCESS!")
-        return conn
-    except psycopg2.Error as err:
-        print(f"Error connecting to PostgreSQL: {err}")
-        print(f"DEBUG Params: Host={DB_HOST}, Port={DB_PORT}, User={DB_USER}")
-        return None
+        return psycopg2.connect(**conn_params)
     except Exception as e:
-        print(f"Error establishing connection: {e}")
+        print(f"Error connecting to PostgreSQL: {e}")
         return None
 
 def initialize_database():
-    """
-    Connects to the database and executes the full schema creation SQL.
-    This should only be run once for initialization.
-    """
     conn = get_db_connection()
-    if conn is None:
-        return {"success": False, "message": "Database initialization connection failed."}, 500
-    
+    if conn is None: return {"success": False, "message": "DB Connection Failed"}, 500
     try:
         cursor = conn.cursor()
-        # Execute the multi-statement SQL schema
         cursor.execute(DB_INIT_SQL)
         conn.commit()
-        
-        print("✅ Database Schema Created/Replaced Successfully.")
-        return {"success": True, "message": "Database schema created/replaced successfully."}, 200
-        
+        return {"success": True, "message": "Database schema initialized successfully."}, 200
     except Exception as e:
         conn.rollback()
-        print(f"❌ Error during schema creation: {e}")
-        return {"success": False, "message": f"Error during schema creation: {e}"}, 500
+        return {"success": False, "message": str(e)}, 500
     finally:
-        if conn and not conn.closed:
-            cursor.close()
-            conn.close()
+        if conn: conn.close()
 
-# --- 3. CORE UTILITIES (PostgreSQL History & Logging) ---
+# --- 3. HARDWARE CORE: THE LIVE UPLINK ---
+
+@app.route('/api/v1/update', methods=['POST'])
+def update_telemetry():
+    """
+    RECEIVES DATA FROM ESP32.
+    Saves to PostgreSQL AND Emits to SocketIO Dashboard.
+    """
+    data = request.json
+    if not data:
+        return jsonify({"success": False, "message": "No data"}), 400
+
+    bin_id = data.get('bin_id', 'BIN-001')
+    fill = data.get('fill_percentage', 0)
+    locked = bool(data.get('is_locked', 0))
+    status = data.get('status_msg', "Monitoring")
+    lat = data.get('lat', 0.0)
+    lon = data.get('lon', 0.0)
+    sats = data.get('sats', 0)
+
+    # 1. Real-time Push to Dashboard via SocketIO
+    socketio.emit('bin_update', {
+        "bin_id": bin_id,
+        "fill_percentage": fill,
+        "is_locked": locked,
+        "status_msg": status,
+        "lat": lat,
+        "lon": lon,
+        "sats": sats,
+        "time": datetime.now().strftime("%H:%M:%S")
+    })
+
+    # 2. Persistent Save to PostgreSQL Telemetry Table
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            query = """
+                INSERT INTO telemetry (bin_id, fill_percentage, is_lid_locked, status_msg, lat, lon, sats)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """
+            cur.execute(query, (bin_id, fill, locked, status, lat, lon, sats))
+            conn.commit()
+            cur.close()
+            conn.close()
+        except Exception as e:
+            print(f"PostgreSQL Storage Error: {e}")
+
+    return jsonify({"success": True}), 200
+
+# --- 4. CORE UTILITIES ---
 
 def get_latest_alert_time(conn, bin_id):
-    """
-    Finds the time of the latest 'FULL' alert for a bin based on PostgreSQL Telemetry history.
-    """
     try:
         cursor = conn.cursor()
-        query = """
-        SELECT timestamp FROM telemetry 
-        WHERE bin_id = %s AND fill_percentage >= 90
-        ORDER BY timestamp DESC
-        LIMIT 1;
-        """
+        query = "SELECT timestamp FROM telemetry WHERE bin_id = %s AND fill_percentage >= 90 ORDER BY timestamp DESC LIMIT 1;"
         cursor.execute(query, (bin_id,))
         result = cursor.fetchone()
-        
-        if result:
-            return result[0] 
-        return None
-    except Exception as e:
-        print(f"Error fetching latest alert time: {e}")
-        return None
-    finally:
-        if 'cursor' in locals() and cursor:
-            cursor.close()
+        return result[0] if result else None
+    except: return None
+    finally: cursor.close()
 
 def get_collection_history(conn, bin_id):
-    """Fetches the collection history and performance metrics for a bin."""
     try:
-        cursor = conn.cursor()
-        query = """
-        SELECT collection_time, time_to_collect_min, is_on_time, reward_issued 
-        FROM collection_log 
-        WHERE bin_id = %s
-        ORDER BY collection_time DESC;
-        """
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        query = "SELECT collection_time, time_to_collect_min, is_on_time, reward_issued FROM collection_log WHERE bin_id = %s ORDER BY collection_time DESC;"
         cursor.execute(query, (bin_id,))
-        columns = [desc[0] for desc in cursor.description]
-        history_list = [dict(zip(columns, row)) for row in cursor.fetchall()]
-        return history_list
-    except Exception as e:
-        print(f"Error fetching collection history: {e}")
-        return []
-    finally:
-        if 'cursor' in locals() and cursor:
-            cursor.close()
+        return [dict(row) for row in cursor.fetchall()]
+    except: return []
+    finally: cursor.close()
 
-# --- 4. CORE ROUTES ---
+# --- 5. WEB ROUTES ---
 
 @app.route('/')
 def index():
-    """Default route: Renders the login page."""
     global USER_LOGGED_IN
-    if USER_LOGGED_IN:
-        return redirect(url_for('dashboard'))
-    # NOTE: You need a 'login.html' template in your templates folder
+    if USER_LOGGED_IN: return redirect(url_for('dashboard_page'))
     return render_template('login.html', title='Smart Waste Login')
 
 @app.route('/login', methods=['POST'])
 def login():
-    """Handles the login form submission."""
     global USER_LOGGED_IN
     username = request.form.get('username')
     password = request.form.get('password')
-    
     if username == "official" and password == "1234":
         USER_LOGGED_IN = True
-        return jsonify({"success": True, "message": "Login successful."}), 200
-    else:
-        return jsonify({"success": False, "message": "Invalid username or password."}), 401
-
-@app.route('/logout')
-def logout():
-    """Handles user logout: Resets session state and redirects to login."""
-    global USER_LOGGED_IN
-    USER_LOGGED_IN = False
-    return redirect(url_for('index'))
+        return jsonify({"success": True}), 200
+    return jsonify({"success": False}), 401
 
 @app.route('/dashboard')
-def dashboard():
-    """Renders the main dashboard page."""
+def dashboard_page():
     global USER_LOGGED_IN
-    if not USER_LOGGED_IN:
-        return redirect(url_for('index'))
-    # NOTE: You need a 'dashboard.html' template in your templates folder
-    return render_template('dashboard.html', title='Smart Waste Dashboard')
+    if not USER_LOGGED_IN: return redirect(url_for('index'))
+    return render_template('dashboard.html')
 
-@app.route('/register')
-def register_form():
-    """Renders the dustbin registration form page."""
-    global USER_LOGGED_IN
-    if not USER_LOGGED_IN:
-        return redirect(url_for('index'))
-    # NOTE: You need a 'register_bin.html' template in your templates folder
-    return render_template('register_bin.html', title='Register New Bin')
-
-# --- 5. API ENDPOINTS ---
-
-# --- NEW ENDPOINT FOR DATABASE INITIALIZATION ---
 @app.route('/api/v1/init_db', methods=['POST'])
 def init_db_endpoint():
-    """API endpoint to manually trigger database schema creation."""
     return jsonify(initialize_database())
-# -----------------------------------------------
 
 @app.route('/api/v1/register_bin', methods=['POST'])
 def register_bin():
-    """Handles POST requests to register a new dustbin and stores it in the Dustbins table."""
     data = request.json
-    
-    required_fields = ['bin_id', 'latitude', 'longitude', 'supervisor_name', 'max_capacity_cm']
-    if not all(field in data for field in required_fields):
-        return jsonify({"success": False, "message": "Missing required data fields."}), 400
-
     conn = get_db_connection()
-    if conn is None:
-        return jsonify({"success": False, "message": "Database connection failed. Check DB variables."}), 500
-
+    if not conn: return jsonify({"success": False}), 500
     try:
         cursor = conn.cursor()
-        
-        insert_query = """
-        INSERT INTO dustbins 
-        (bin_id, latitude, longitude, supervisor_name, location_name, bin_type, max_capacity_cm, installation_date)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        """
-        
-        bin_data = (
-            data['bin_id'],
-            data['latitude'],
-            data['longitude'],
-            data['supervisor_name'],
-            data.get('location_name', 'N/A'),
-            data.get('bin_type', 'General'),
-            data['max_capacity_cm'],
-            date.today()
-        )
-        
-        cursor.execute(insert_query, bin_data)
+        query = "INSERT INTO dustbins (bin_id, latitude, longitude, supervisor_name, max_capacity_cm, installation_date) VALUES (%s, %s, %s, %s, %s, %s)"
+        cursor.execute(query, (data['bin_id'], data['latitude'], data['longitude'], data['supervisor_name'], data['max_capacity_cm'], date.today()))
         conn.commit()
-        
-        return jsonify({
-            "success": True, 
-            "message": f"Dustbin {data['bin_id']} registered successfully. Please refresh dashboard.",
-            "bin_id": data['bin_id']
-        }), 201
-
-    except psycopg2.IntegrityError as e:
-        conn.rollback()
-        # PostgreSQL error parsing is different from MySQL
-        return jsonify({"success": False, "message": f"Registration failed. Bin ID may already exist or data is invalid."}), 409
+        return jsonify({"success": True}), 201
     except Exception as e:
         conn.rollback()
-        return jsonify({"success": False, "message": f"An unexpected error occurred: {e}"}), 500
+        return jsonify({"success": False, "message": str(e)}), 400
     finally:
-        if conn and not conn.closed:
-            cursor.close()
-            conn.close()
-
-@app.route('/api/v1/bins/registered', methods=['GET'])
-def get_registered_bins():
-    """Fetches all static information for all registered bins from PostgreSQL."""
-    conn = get_db_connection()
-    if conn is None:
-        return jsonify({"success": False, "message": "Database connection failed. Check DB variables."}), 500
-    
-    try:
-        cursor = conn.cursor()
-        select_query = "SELECT bin_id, latitude, longitude, supervisor_name, location_name, bin_type, max_capacity_cm, installation_date FROM dustbins;"
-        cursor.execute(select_query)
-        
-        # Fetch column names manually for dict output
-        columns = [desc[0] for desc in cursor.description]
-        bins = [dict(zip(columns, row)) for row in cursor.fetchall()]
-
-        # --- FIX: Convert datetime.date object to ISO string for JSON serialization ---
-        for bin_data in bins:
-            if isinstance(bin_data.get('installation_date'), date):
-                bin_data['installation_date'] = bin_data['installation_date'].isoformat()
-        # -----------------------------------------------------------------------------
-
-        return jsonify({"success": True, "bins": bins}), 200
-
-    except Exception as e:
-        return jsonify({"success": False, "message": f"Error fetching bins: {e}"}), 500
-    finally:
-        if conn and not conn.closed:
-            cursor.close()
-            conn.close()
-
-@app.route('/api/v1/telemetry/latest', methods=['GET'])
-def get_latest_telemetry():
-    """
-    SIMULATION: Fetches registered bins from PostgreSQL and generates dynamic fill data.
-    """
-    pg_conn = get_db_connection()
-    if pg_conn is None:
-        return jsonify({"success": False, "message": "Database connection failed."}), 500
-        
-    try:
-        cursor = pg_conn.cursor(cursor_factory=psycopg2.extras.DictCursor) 
-        cursor.execute("SELECT bin_id FROM dustbins;")
-        registered_bins = cursor.fetchall()
-    except Exception as e:
-        print(f"Error fetching registered bins from PostgreSQL: {e}")
-        return jsonify({"success": False, "message": "Could not retrieve registered bin list."}), 500
-    finally:
-        if 'cursor' in locals() and cursor and cursor.connection and not cursor.connection.closed:
-            cursor.close()
-            pg_conn.close()
-
-    latest_data = []
-    current_time_ms = int(time.time() * 1000)
-
-    # 2. Generate Simulated Live Status for each bin
-    for bin_info in registered_bins:
-        bin_id = bin_info['bin_id']
-        
-        # Use bin_id hash and time for a simulated dynamic percentage (0-100)
-        # This simulates change over a 60 second cycle, updating every 5 seconds.
-        bin_hash = sum(ord(c) for c in bin_id)
-        
-        # Calculation: (Time + Hash) % 100 
-        # Cycles based on time (current_time_ms // 5000 is updated every 5 seconds)
-        fill_percentage_raw = (current_time_ms // 5000 + bin_hash) % 100 
-        
-        # Smooth and constrain the percentage (10% to 90%)
-        fill_percentage = (fill_percentage_raw % 80) + 10
-        fill_percentage = min(fill_percentage, 95) # Cap max fill at 95%
-        
-        # Determine lock status based on simulation
-        is_locked = 1 if fill_percentage >= 90 else 0
-        alert_triggered = 1 if fill_percentage >= 95 else 0
-
-        telemetry_record = {
-            "bin_id": bin_id,
-            "timestamp": datetime.now().isoformat(),
-            "fill_level_cm": 15 * (100 - fill_percentage) / 100, # Simulated CM value
-            "fill_percentage": fill_percentage,
-            "alert_triggered": alert_triggered,
-            "is_lid_locked": is_locked, 
-            "collection_time": None, 
-            "delay_minutes": 0,
-        }
-        latest_data.append(telemetry_record)
-
-    return jsonify({"success": True, "latest_data": latest_data}), 200
-
-
-@app.route('/api/v1/bin/analysis/<bin_id>', methods=['GET'])
-def get_bin_analysis(bin_id):
-    """Placeholder for Agentic AI analysis of a single bin, including performance history."""
-    conn = get_db_connection()
-    if conn is None:
-        return jsonify({"success": False, "message": "Database connection failed. Check DB variables."}), 500
-    
-    try:
-        # Fetch collection history (from PostgreSQL) to provide detailed performance data
-        history = get_collection_history(conn, bin_id)
-        
-        # --- FIX: Retrieve ALL simulated telemetry data ---
-        telemetry_response = get_latest_telemetry().get_json(silent=True)
-        all_simulated_data = telemetry_response.get('latest_data', [])
-        
-        # Filter for the specific bin_id
-        current_bin_data = next((item for item in all_simulated_data if item['bin_id'] == bin_id), None)
-
-        if not current_bin_data:
-            return jsonify({"success": False, "message": f"Simulated telemetry data not found for bin {bin_id}."}), 404
-
-        simulated_fill = current_bin_data['fill_percentage']
-        # --------------------------------------------------------------------------
-        
-        # Placeholder for dynamic analysis report
-        # NOTE: This uses hardcoded urgency for demo purposes
-        
-        if simulated_fill > 90:
-            urgency = "CRITICAL"
-            issue = f"High fill level ({simulated_fill}%) detected. Requires immediate collection."
-            precautions = [
-                "Issue a high-priority alert to Collector Team A.",
-                "Remotely lock the lid mechanism to prevent spillage."
-            ]
-        elif simulated_fill > 60:
-            urgency = "HIGH"
-            issue = f"Warning: Bin approaching capacity ({simulated_fill}%)."
-            precautions = ["Verify collection schedule for this route."]
-        else:
-            urgency = "ROUTINE"
-            issue = "Normal Fill Rate."
-            precautions = ["Maintain current collection schedule."]
-
-        analysis_report = {
-            "bin_id": bin_id,
-            "urgency": urgency,
-            "core_issue": issue,
-            "precautions": precautions,
-            "collection_history": [
-                {
-                    "time": item['collection_time'].isoformat() if item.get('collection_time') else None,
-                    "delay": item['time_to_collect_min'],
-                    "on_time": item['is_on_time'],
-                    "reward": item['reward_issued']
-                } for item in history
-            ],
-            "total_collections": len(history),
-            "on_time_collections": len([h for h in history if h.get('is_on_time')]),
-            "analysis_timestamp": datetime.now().isoformat()
-        }
-
-        return jsonify({"success": True, "analysis": analysis_report}), 200
-        
-    except Exception as e:
-        return jsonify({"success": False, "message": f"Error generating analysis: {e}"}), 500
-    finally:
-        if conn and not conn.closed:
-            conn.close()
+        conn.close()
 
 @app.route('/api/v1/log_collection', methods=['POST'])
 def log_collection():
-    """Logs a successful collection event and calculates performance (PostgreSQL)."""
     data = request.json
     bin_id = data.get('bin_id')
-    
-    if not bin_id:
-        return jsonify({"success": False, "message": "Missing bin_id."}), 400
-
     conn = get_db_connection()
-    if conn is None:
-        return jsonify({"success": False, "message": "Database connection failed. Check DB variables."}), 500
+    if not conn: return jsonify({"success": False}), 500
     
     collection_time = datetime.now()
     alert_time = get_latest_alert_time(conn, bin_id)
-    
-    MAX_DELAY_MINUTES = 180 
-    
-    time_to_collect_min = 0
-    is_on_time = False
-    reward_issued = False
-    
-    if alert_time:
-        time_difference = collection_time - alert_time
-        time_to_collect_min = int(time_difference.total_seconds() / 60)
-        
-        is_on_time = time_to_collect_min <= MAX_DELAY_MINUTES
-        reward_issued = is_on_time
+    time_to_collect_min = int((collection_time - alert_time).total_seconds() / 60) if alert_time else 0
+    is_on_time = time_to_collect_min <= 180 # 3 Hours
     
     try:
         cursor = conn.cursor()
-        
-        insert_query = """
-        INSERT INTO collection_log 
-        (bin_id, collection_time, alert_time, time_to_collect_min, is_on_time, reward_issued, collector_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """
-        
-        collector_id = "COL-A01" 
-        
-        log_data = (
-            bin_id,
-            collection_time,
-            alert_time,
-            time_to_collect_min,
-            is_on_time,
-            reward_issued,
-            collector_id
-        )
-        
-        cursor.execute(insert_query, log_data)
+        query = "INSERT INTO collection_log (bin_id, collection_time, alert_time, time_to_collect_min, is_on_time, reward_issued, collector_id) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+        cursor.execute(query, (bin_id, collection_time, alert_time, time_to_collect_min, is_on_time, is_on_time, "COL-A01"))
         conn.commit()
-        
-        return jsonify({
-            "success": True, 
-            "message": f"Collection logged successfully for {bin_id}. Time to clear: {time_to_collect_min} min. Reward issued: {reward_issued}",
-            "reward_issued": reward_issued
-        }), 200
-
+        return jsonify({"success": True, "reward_issued": is_on_time}), 200
     except Exception as e:
         conn.rollback()
-        return jsonify({"success": False, "message": f"Error logging collection: {e}"}), 500
+        return jsonify({"success": False, "message": str(e)}), 500
     finally:
-        if conn and not conn.closed:
-            cursor.close()
-            conn.close()
+        conn.close()
 
+# --- 6. SIMULATION & ANALYSIS ---
 
-# --- 6. VEHICLE SIMULATION LOGIC (RETAINED) ---
-
-SIMULATED_ROUTE = [
-    (17.4300, 78.4100), 
-    (17.4000, 78.4500), 
-    (17.4450, 78.3950), 
-    (17.3850, 78.4867), 
-    (17.3900, 78.5000) 
-]
-
-def get_simulated_vehicle_route():
-    """Simulates a collection vehicle moving along a fixed route over time."""
-    current_time = time.time()
-    route_index = int(current_time // 10) % len(SIMULATED_ROUTE)
-    current_lat, current_lon = SIMULATED_ROUTE[route_index]
-    route_path = SIMULATED_ROUTE[:route_index + 1]
-    
-    return {
-        "vehicle_id": "TRK-A01",
-        "current_position": {"latitude": current_lat, "longitude": current_lon},
-        "path_history": [{"latitude": lat, "longitude": lon} for lat, lon in route_path],
-        "status": "In Service, Route R03",
-        "timestamp": datetime.now().isoformat()
-    }
+@app.route('/api/v1/telemetry/latest', methods=['GET'])
+def get_latest_telemetry():
+    """Fallback: Generates simulated data if hardware is offline."""
+    return jsonify({"success": True, "latest_data": [{"bin_id": "BIN-001", "fill_percentage": 45, "status_msg": "Simulated Ready"}]})
 
 @app.route('/api/v1/collection/route', methods=['GET'])
 def get_collection_route():
-    """API endpoint to serve the simulated collection vehicle data."""
-    route_data = get_simulated_vehicle_route()
-    return jsonify({"success": True, "route": route_data}), 200
+    """Simulates a vehicle moving along fixed coordinates."""
+    current_time = time.time()
+    route = [(17.43, 78.41), (17.40, 78.45), (17.44, 78.39)]
+    idx = int(current_time // 10) % len(route)
+    return jsonify({"success": True, "route": {"vehicle_id": "TRK-A01", "current_position": {"latitude": route[idx][0], "longitude": route[idx][1]}}})
 
-# --- 7. RUN SERVER ---
+# --- 7. START SERVER ---
 if __name__ == '__main__':
-    # NOTE: If running locally, you must have the required DB variables in a .env file
-    print("-------------------------------------------------------")
-    print("Flask Server running at: http://127.0.0.1:5000/")
-    # You can uncomment this line and run the schema setup locally once:
-    # print(initialize_database()) 
-    print("-------------------------------------------------------")
-    # For production deployment (Render), we typically rely on gunicorn
-    app.run(debug=True, port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    socketio.run(app, host='0.0.0.0', port=port, debug=True)
